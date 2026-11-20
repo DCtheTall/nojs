@@ -58,7 +58,20 @@ from lisp_ref import (
     TOK_NUM,
     TOK_RP,
     TOK_SYM,
+    TOKEN_COMPOSER_LEN,
+    TOKEN_EXTRA_TIDS,
+    TOKEN_LABEL_TO_ID,
+    TOKEN_NUM_MIN,
+    TOKEN_PALETTE,
+    TOKEN_TID_CONSEC_END,
+    TOKEN_TID_KW_START,
+    TOKEN_TID_NUM_ALL_END,
+    TOKEN_TID_NUM_START,
+    TOKEN_TID_OP_END,
+    TOKEN_TID_OP_START,
+    encode_token_composer_slots,
     pad_source_codes,
+    tokenize_to_palette_ids,
 )
 
 
@@ -193,7 +206,7 @@ def _allocate_temp_registers(
     last_use: Dict[str, int] = {}
     for st_idx, cls in enumerate(one_shot_order):
         for lhs, rhs in stage_defs[cls]:
-            if lhs not in keep_names and not lhs.startswith("--b"):
+            if lhs not in keep_names and not lhs.startswith(("--b", "--tb", "--ovr", "--ptid", "--use_tok")):
                 assert lhs not in def_stage, f"Non-SSA temp {lhs} redefined in {cls}"
                 def_stage[lhs] = st_idx
                 last_use[lhs] = st_idx
@@ -271,23 +284,64 @@ def build_lisp_css_spec(num_ticks: int = NUM_VM_TICKS) -> LispCSSSpec:
     stage_defs: Dict[str, List[Tuple[str, str]]] = {}
 
     # -----------------------------------------------------------------------
-    # Phase 1: Compact Parallel 64-Character SIMD Lexer (lx0 .. lx4)
+    # Phase 1: Compact Parallel 64-Char Lexer + 40-Slot 8-Bit Token Composer (lx0 .. lx4)
     # -----------------------------------------------------------------------
     lx0: List[Tuple[str, str]] = []
+    char_sc_exprs: List[str] = []
     for i in range(SOURCE_LEN):
         terms = [f"{1 << b}*var(--b{i}_{b})" if b > 0 else f"var(--b{i}_0)" for b in range(6)]
-        lx0.append((f"--ch{i}", wrap_calc(" + ".join(terms))))
+        lx0.append((f"--rch{i}", wrap_calc(" + ".join(terms))))
+        # CHAR_COMMENT == 3 == 0b000011
+        sc_e = (
+            f"var(--b{i}_0)*var(--b{i}_1)*(1 - var(--b{i}_2))"
+            f"*(1 - var(--b{i}_3))*(1 - var(--b{i}_4))*(1 - var(--b{i}_5))"
+        )
+        char_sc_exprs.append(sc_e)
+        lx0.append((f"--sc{i}", wrap_calc(sc_e)))
+    for g in range(8):
+        lx0.append((f"--scb{g}", wrap_calc(" + ".join(char_sc_exprs[8 * g : 8 * g + 8]))))
+
+    # Each token cell inherits `--ptid{i}` from the active preset (or 1 = `;` on Blank),
+    # and switches to the user's 8-bit `--tb{i}_{0..7}` selection whenever `--ovr{i} == 1`.
+    for i in range(TOKEN_COMPOSER_LEN):
+        utid_terms = [f"{1 << b}*var(--tb{i}_{b})" if b > 0 else f"var(--tb{i}_0)" for b in range(8)]
+        utid_s = " + ".join(utid_terms)
+        lx0.append((
+            f"--rtid{i}",
+            wrap_calc(f"(1 - var(--ovr{i}))*var(--ptid{i}) + var(--ovr{i})*({utid_s})"),
+        ))
     stage_defs["lx0"] = lx0
 
-    # lx0b: Digit (--dg) & Alpha (--al) flags
+    # lx0b: Apply ';' masking -> --ch0..63 (live char preview) & compute token ';' flags (--tsc, --tscb)
     lx0b: List[Tuple[str, str]] = []
     for i in range(SOURCE_LEN):
-        ch = f"var(--ch{i})"
-        lx0b.append((f"--dg{i}", wrap_calc(f"{css_ge_const(ch, 10)}*{css_le_const(ch, 19)}")))
-        lx0b.append((f"--al{i}", wrap_calc(css_ge_const(ch, 30))))
+        g, r = divmod(i, 8)
+        c_terms = [f"var(--scb{bg})" for bg in range(g)] + [f"var(--sc{8 * g + br})" for br in range(r + 1)]
+        not_cm = f"(1 - min(1,{' + '.join(c_terms)}))"
+        lx0b.append((f"--ch{i}", wrap_calc(f"var(--rch{i})*{not_cm}")))
+    for i in range(TOKEN_COMPOSER_LEN):
+        lx0b.append((f"--tsc{i}", wrap_calc(css_eq(f"var(--rtid{i})", 1))))
+    for g in range(TOKEN_COMPOSER_LEN // 8):
+        lx0b.append((
+            f"--tscb{g}",
+            wrap_calc(" + ".join(css_eq(f"var(--rtid{8 * g + r})", 1) for r in range(8))),
+        ))
     stage_defs["lx0b"] = lx0b
 
-    # lx1: Leading negative literal sign (--ng) + combined 6-digit unsigned number (--nmag) + 4-char symbol (--symv)
+    # lx0c: Digit (--dg) & Alpha (--al) flags + masked visible token IDs (--tvis0..39)
+    lx0c: List[Tuple[str, str]] = []
+    for i in range(SOURCE_LEN):
+        ch = f"var(--ch{i})"
+        lx0c.append((f"--dg{i}", wrap_calc(f"{css_ge_const(ch, 10)}*{css_le_const(ch, 19)}")))
+        lx0c.append((f"--al{i}", wrap_calc(css_ge_const(ch, 30))))
+    for i in range(TOKEN_COMPOSER_LEN):
+        g, r = divmod(i, 8)
+        tc_terms = [f"var(--tscb{bg})" for bg in range(g)] + [f"var(--tsc{8 * g + br})" for br in range(r + 1)]
+        not_tcm = f"(1 - min(1,{' + '.join(tc_terms)}))"
+        lx0c.append((f"--tvis{i}", wrap_calc(f"var(--rtid{i})*{not_tcm}")))
+    stage_defs["lx0c"] = lx0c
+
+    # lx1: Negative sign (--ng), 6-digit number (--nmag), 4-char symbol (--symv), & 8-bit Token Composer decode
     lx1: List[Tuple[str, str]] = []
     for i in range(SOURCE_LEN):
         ch = f"var(--ch{i})"
@@ -323,6 +377,23 @@ def build_lisp_css_spec(num_ticks: int = NUM_VM_TICKS) -> LispCSSSpec:
             if i + 3 < SOURCE_LEN:
                 sym_terms.append(f"{c2}*var(--al{i + 3})*(var(--ch{i + 3}) - 29)")
         lx1.append((f"--symv{i}", wrap_calc(" + ".join(sym_terms))))
+
+    consec_offset = TOKEN_TID_NUM_START - TOKEN_NUM_MIN  # 14
+    op_offset = SYM_ADD - TOKEN_TID_OP_START             # 2
+    for i in range(TOKEN_COMPOSER_LEN):
+        tid = f"var(--tvis{i})"
+        is_tlp = css_eq(tid, 2)
+        is_trp = css_eq(tid, 3)
+        is_tnum = f"({css_ge_const(tid, TOKEN_TID_NUM_START)}*{css_le_const(tid, TOKEN_TID_NUM_ALL_END)})"
+        is_tsym = css_ge_const(tid, TOKEN_TID_OP_START)
+        lx1.append((f"--tem{i}", wrap_calc(css_ge_const(tid, 2))))
+        lx1.append((f"--tak{i}", wrap_calc(f"1*{is_tlp} + 2*{is_trp} + 3*{is_tnum} + 4*{is_tsym}")))
+
+        consec_num = f"({css_ge_const(tid, TOKEN_TID_NUM_START)}*{css_le_const(tid, TOKEN_TID_CONSEC_END)})*({tid} - {consec_offset})"
+        mile_terms = [f"{val}*{css_eq(tid, idx)}" for idx, val in TOKEN_EXTRA_TIDS]
+        op_sym = f"({css_ge_const(tid, TOKEN_TID_OP_START)}*{css_le_const(tid, TOKEN_TID_OP_END)})*({tid} + {op_offset})"
+        kw_terms = [f"{TOKEN_PALETTE[idx][2]}*{css_eq(tid, idx)}" for idx in range(TOKEN_TID_KW_START, len(TOKEN_PALETTE))]
+        lx1.append((f"--tav{i}", wrap_calc(" + ".join([consec_num] + mile_terms + [op_sym] + kw_terms))))
     stage_defs["lx1"] = lx1
 
     # lx2: Emit bit (--em{i}), raw kind (--ak{i}), and signed/symbol value (--av{i})
@@ -365,9 +436,14 @@ def build_lisp_css_spec(num_ticks: int = NUM_VM_TICKS) -> LispCSSSpec:
             f"{is_num_end}*(1 - 2*{nsg_s})*var(--nmag{i}) + {is_sym_start}*var(--symv{i}) "
             f"+ {SYM_LE}*{is_le_end} + {SYM_GE}*{is_ge_end} + {is_op1}*(100 + {ch})"
         )
-        lx2.append((f"--em{i}", wrap_calc(emit_expr)))
-        lx2.append((f"--ak{i}", wrap_calc(kind_expr)))
-        lx2.append((f"--av{i}", wrap_calc(val_expr)))
+        if i < TOKEN_COMPOSER_LEN:
+            lx2.append((f"--em{i}", wrap_calc(f"(1 - var(--use_tok))*({emit_expr}) + var(--use_tok)*var(--tem{i})")))
+            lx2.append((f"--ak{i}", wrap_calc(f"(1 - var(--use_tok))*({kind_expr}) + var(--use_tok)*var(--tak{i})")))
+            lx2.append((f"--av{i}", wrap_calc(f"(1 - var(--use_tok))*({val_expr}) + var(--use_tok)*var(--tav{i})")))
+        else:
+            lx2.append((f"--em{i}", wrap_calc(f"(1 - var(--use_tok))*({emit_expr})")))
+            lx2.append((f"--ak{i}", wrap_calc(f"(1 - var(--use_tok))*({kind_expr})")))
+            lx2.append((f"--av{i}", wrap_calc(f"(1 - var(--use_tok))*({val_expr})")))
     stage_defs["lx2"] = lx2
 
     lx3: List[Tuple[str, str]] = [
@@ -1173,7 +1249,7 @@ def build_lisp_css_spec(num_ticks: int = NUM_VM_TICKS) -> LispCSSSpec:
     ]
 
     one_shot_order = [
-        "lx0", "lx0b", "lx1", "lx2", "lx3", "lx4",
+        "lx0", "lx0b", "lx0c", "lx1", "lx2", "lx3", "lx4",
         "cp0", "cp1", "cp2", "cp3", "cp4", "cp5", "cpu",
         "ps0", "ps0b", "ps1", "ps2", "ps3", "ps4",
     ]
@@ -1185,6 +1261,10 @@ def build_lisp_css_spec(num_ticks: int = NUM_VM_TICKS) -> LispCSSSpec:
         "--drem", "--dden", "--dq", "--dstep", "--dsgn",
         "--f_mode", "--f_err",
     }
+    for i in range(SOURCE_LEN):
+        keep_names.add(f"--ch{i}")
+    for i in range(TOKEN_COMPOSER_LEN):
+        keep_names.add(f"--tvis{i}")
     for i in range(MAX_TOKENS):
         keep_names.update((f"--tk{i}", f"--tv{i}", f"--tn{i}"))
     for k in range(NUM_VARS):
@@ -1257,20 +1337,11 @@ def _eval_css_expr(rhs: str, parent_env: Dict[str, int], stage_name: str, lhs: s
     return int(val)
 
 
-def simulate_css_lisp(
-    src: str,
-    spec: LispCSSSpec | None = None,
+def _run_pipeline_env(
+    env: Dict[str, int],
+    spec: LispCSSSpec,
     fast_halt: bool = True,
 ) -> Dict[str, int]:
-    if spec is None:
-        spec = build_lisp_css_spec()
-
-    codes = pad_source_codes(src, SOURCE_LEN)
-    env: Dict[str, int] = {prop: 0 for prop in spec.registered_props}
-    for slot, code in enumerate(codes):
-        for bit in range(6):
-            env[f"--b{slot}_{bit}"] = (code >> bit) & 1
-
     halted_ticks_verified = 0
     idx = 0
     total = len(spec.pipeline_classes)
@@ -1287,5 +1358,71 @@ def simulate_css_lisp(
             halted_ticks_verified += 1
             if halted_ticks_verified >= 2:
                 idx = total - 1
-
     return env
+
+
+def simulate_css_lisp(
+    src: str,
+    spec: LispCSSSpec | None = None,
+    fast_halt: bool = True,
+) -> Dict[str, int]:
+    if spec is None:
+        spec = build_lisp_css_spec()
+
+    codes = pad_source_codes(src, SOURCE_LEN)
+    env: Dict[str, int] = {prop: 0 for prop in spec.registered_props}
+    env["--use_tok"] = 0
+    for slot, code in enumerate(codes):
+        for bit in range(6):
+            env[f"--b{slot}_{bit}"] = (code >> bit) & 1
+    for slot in range(TOKEN_COMPOSER_LEN):
+        env[f"--ptid{slot}"] = 1
+        env[f"--ovr{slot}"] = 0
+        for bit in range(8):
+            env[f"--tb{slot}_{bit}"] = 0
+    return _run_pipeline_env(env, spec, fast_halt=fast_halt)
+
+
+def simulate_css_token_composer(
+    tokens: Sequence[str] = (),
+    spec: LispCSSSpec | None = None,
+    fast_halt: bool = True,
+    preset_src: str = "",
+    overrides: Dict[int, str] | None = None,
+) -> Dict[str, int]:
+    """
+    Simulate browser CSS evaluation in Quick Token Composer mode (`--use_tok: 1`),
+    including preset token inheritance (`--ptid0..39`, defaulting to all `;` when
+    `preset_src == ""`) and per-cell user `<select>` overrides (`--ovr0..39`).
+    """
+    if spec is None:
+        spec = build_lisp_css_spec()
+    if len(tokens) > TOKEN_COMPOSER_LEN:
+        raise ValueError(f"Token count {len(tokens)} exceeds {TOKEN_COMPOSER_LEN}")
+
+    ptids = tokenize_to_palette_ids(preset_src, TOKEN_COMPOSER_LEN)
+    env: Dict[str, int] = {prop: 0 for prop in spec.registered_props}
+    env["--use_tok"] = 1
+    for slot in range(SOURCE_LEN):
+        for bit in range(6):
+            env[f"--b{slot}_{bit}"] = 0
+    for slot in range(TOKEN_COMPOSER_LEN):
+        env[f"--ptid{slot}"] = ptids[slot]
+        env[f"--ovr{slot}"] = 0
+        for bit in range(8):
+            env[f"--tb{slot}_{bit}"] = 0
+
+    for slot, tok in enumerate(tokens):
+        tid = TOKEN_LABEL_TO_ID[tok]
+        env[f"--ovr{slot}"] = 1
+        for bit in range(8):
+            env[f"--tb{slot}_{bit}"] = (tid >> bit) & 1
+
+    if overrides:
+        for slot, tok in overrides.items():
+            tid = TOKEN_LABEL_TO_ID[tok]
+            env[f"--ovr{slot}"] = 1
+            for bit in range(8):
+                env[f"--tb{slot}_{bit}"] = (tid >> bit) & 1
+
+    return _run_pipeline_env(env, spec, fast_halt=fast_halt)

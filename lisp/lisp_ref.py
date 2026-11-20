@@ -17,13 +17,16 @@ from typing import Dict, List, Optional, Sequence, Tuple
 # ---------------------------------------------------------------------------
 
 SOURCE_LEN = 64
+TOKEN_COMPOSER_LEN = 40
 MAX_TOKENS = 40
+CHAR_COMMENT = 3
 
 # Character codes (0..55, fitting in 6 bits: a=1, b=2, c=4, d=8, e=16, f=32)
 CHAR_TO_CODE: Dict[str, int] = {
     " ": 0,
     "(": 1,
     ")": 2,
+    ";": CHAR_COMMENT,
     "+": 20,
     "-": 21,
     "*": 22,
@@ -39,12 +42,31 @@ for _i in range(26):
     CHAR_TO_CODE[chr(ord("a") + _i)] = 30 + _i
 
 CODE_TO_CHAR: Dict[int, str] = {v: k for k, v in CHAR_TO_CODE.items()}
+# Single-key '.' and non-breaking/open-box spaces all map to whitespace (0)
+CHAR_TO_CODE["."] = 0
+CHAR_TO_CODE["\u00a0"] = 0
+CHAR_TO_CODE["␣"] = 0
 
-# Ordered characters for <select> UI controls
-SELECT_CHARS: Tuple[str, ...] = (
-    (" ", "(", ")", "+", "-", "*", "/", "%", "=", "<", ">")
-    + tuple(str(d) for d in range(10))
-    + tuple(chr(ord("a") + i) for i in range(26))
+# Ordered characters for 64-char <select> UI controls (includes selectable space, '␣', '.', & ';')
+SELECT_CHARS: Tuple[Tuple[str, int, bool], ...] = (
+    (
+        ("\u00a0", 0, False),
+        ("␣", 0, False),
+        (".", 0, False),
+        (";", CHAR_COMMENT, True),
+        ("(", 1, False),
+        (")", 2, False),
+        ("+", 20, False),
+        ("-", 21, False),
+        ("*", 22, False),
+        ("/", 23, False),
+        ("%", 24, False),
+        ("=", 25, False),
+        ("<", 26, False),
+        (">", 27, False),
+    )
+    + tuple((str(d), 10 + d, False) for d in range(10))
+    + tuple((chr(ord("a") + i), 30 + i, False) for i in range(26))
 )
 
 # Token kinds
@@ -152,6 +174,114 @@ ERR_DIV_ZERO = 3
 ERR_CALL = 4
 ERR_STEP_LIMIT = 5
 
+# ---------------------------------------------------------------------------
+# 1b. 8-Bit Quick Token Composer Palette (tid = 0..155, 8 bits: a..h)
+# ---------------------------------------------------------------------------
+# Each entry: (label, tok_kind, tok_val, preview_text)
+#   tid 0       : ' ' / '\u00a0' / '␣' / '.' space/blank (skip)
+#   tid 1       : ';' comment-to-end
+#   tid 2, 3    : '(', ')'
+#   tid 4..114  : ALL consecutive integers -10 .. +100, including all 0..99 (val = tid - 14)
+#   tid 115..117: extra preset milestone integers 144, 462, 1071
+#   tid 118..127: consecutive operators + - * / % = < > <= >= (val = tid + 2)
+#   tid 128..155: 28 keywords & identifiers
+TOKEN_NUM_MIN = -10
+TOKEN_NUM_MAX = 100
+TOKEN_EXTRA_NUMS: Tuple[int, ...] = (144, 462, 1071)
+
+TOKEN_TID_NUM_START = 4
+TOKEN_TID_CONSEC_END = TOKEN_TID_NUM_START + (TOKEN_NUM_MAX - TOKEN_NUM_MIN)  # 114
+TOKEN_EXTRA_TIDS: Tuple[Tuple[int, int], ...] = tuple(
+    (TOKEN_TID_CONSEC_END + 1 + idx, val) for idx, val in enumerate(TOKEN_EXTRA_NUMS)
+)
+TOKEN_TID_NUM_ALL_END = TOKEN_TID_CONSEC_END + len(TOKEN_EXTRA_NUMS)  # 117
+TOKEN_TID_OP_START = TOKEN_TID_NUM_ALL_END + 1  # 118
+TOKEN_TID_OP_END = TOKEN_TID_OP_START + 9       # 127
+TOKEN_TID_KW_START = TOKEN_TID_OP_END + 1       # 128
+
+TOKEN_KEYWORDS_AND_VARS: Tuple[str, ...] = (
+    "mod", "not", "if", "let", "set", "begin", "def", "fn", "t", "nil",
+    "x", "y", "z", "a", "b", "c", "n", "k", "f", "g", "sq", "inc", "fact", "fib", "gcd", "twice", "hyp", "acc",
+)
+
+
+def _build_token_palette() -> Tuple[Tuple[str, int, int, str], ...]:
+    items: List[Tuple[str, int, int, str]] = [
+        (" ", 0, 0, ""),
+        (";", 0, 0, ""),
+        ("(", TOK_LP, 0, "("),
+        (")", TOK_RP, 0, ") "),
+    ]
+    for v in range(TOKEN_NUM_MIN, TOKEN_NUM_MAX + 1):
+        items.append((str(v), TOK_NUM, v, f"{v} "))
+    for v in TOKEN_EXTRA_NUMS:
+        items.append((str(v), TOK_NUM, v, f"{v} "))
+    for op_s, sym_c in (
+        ("+", SYM_ADD), ("-", SYM_SUB), ("*", SYM_MUL), ("/", SYM_DIV), ("%", SYM_PCT),
+        ("=", SYM_EQ), ("<", SYM_LT), (">", SYM_GT), ("<=", SYM_LE), (">=", SYM_GE),
+    ):
+        items.append((op_s, TOK_SYM, sym_c, f"{op_s} "))
+    for kw in TOKEN_KEYWORDS_AND_VARS:
+        items.append((kw, TOK_SYM, encode_symbol(kw), f"{kw} "))
+    assert len(items) < 256
+    return tuple(items)
+
+
+TOKEN_PALETTE: Tuple[Tuple[str, int, int, str], ...] = _build_token_palette()
+TOKEN_LABEL_TO_ID: Dict[str, int] = {lbl: idx for idx, (lbl, _, _, _) in enumerate(TOKEN_PALETTE)}
+TOKEN_LABEL_TO_ID["."] = 0
+TOKEN_LABEL_TO_ID["␣"] = 0
+TOKEN_LABEL_TO_ID["\u00a0"] = 0
+
+_TOKEN_KIND_VAL_TO_ID: Dict[Tuple[int, int], int] = {
+    (tk, tv): idx for idx, (_, tk, tv, _) in enumerate(TOKEN_PALETTE) if idx >= 2
+}
+
+
+def _build_token_select_options() -> Tuple[Tuple[str, int, bool], ...]:
+    opts: List[Tuple[str, int, bool]] = [
+        ("\u00a0", 0, False),
+        ("␣", 0, False),
+        (".", 0, False),
+        (";", 1, True),
+        ("(", 2, False),
+        (")", 3, False),
+    ]
+    primary_1key = {"-", "<", ">", "def", "if", "let", "mod", "set"}
+    remaining = [(lbl, tid) for tid, (lbl, _, _, _) in enumerate(TOKEN_PALETTE) if tid >= 4]
+    remaining.sort(
+        key=lambda pair: (
+            pair[0][0],
+            0 if pair[0] in primary_1key else (1 if len(pair[0]) == 1 else 2),
+            len(pair[0]),
+            pair[0],
+        )
+    )
+    for lbl, tid in remaining:
+        opts.append((lbl, tid, False))
+    return tuple(opts)
+
+
+TOKEN_SELECT_OPTIONS: Tuple[Tuple[str, int, bool], ...] = _build_token_select_options()
+
+BLANK_TOKEN_LIST: Tuple[str, ...] = (";",) * TOKEN_COMPOSER_LEN
+DEFAULT_TOKEN_LIST: Tuple[str, ...] = (
+    "(", "+", "(", "*", "6", "7", ")", "(", "-", "100", "58", ")", ")", ";",
+)
+
+
+def encode_token_composer_slots(
+    tokens: Sequence[str],
+    length: int = TOKEN_COMPOSER_LEN,
+    pad_tid: int = 1,
+) -> List[int]:
+    """Encode a list of token strings (<= 40) into 40 `tid` codes (0..255), padding with `pad_tid`."""
+    if len(tokens) > length:
+        raise ValueError(f"Token count {len(tokens)} exceeds {length}")
+    res = [TOKEN_LABEL_TO_ID[t] for t in tokens]
+    res.extend([pad_tid] * (length - len(res)))
+    return res
+
 
 # ---------------------------------------------------------------------------
 # 2. Showcase Presets & Default Editable Program
@@ -160,6 +290,12 @@ ERR_STEP_LIMIT = 5
 DEFAULT_PROGRAM = "(+ (* 6 7) (- 100 58))"  # = 84
 
 PRESETS: Tuple[Tuple[str, str, str, int], ...] = (
+    (
+        "arith",
+        "Arithmetic (+ * -)",
+        DEFAULT_PROGRAM,
+        84,
+    ),
     (
         "div-mod",
         "Integer / & mod",
@@ -248,6 +384,8 @@ def lex_and_parse_ref(src: str) -> ParsedProgram:
     n = len(codes)
     while i < n:
         c = codes[i]
+        if c == CHAR_COMMENT:
+            break
         if c == 0:
             i += 1
         elif c == 1:
@@ -330,6 +468,26 @@ def lex_and_parse_ref(src: str) -> ParsedProgram:
                 next_expr[open_idx] = idx + 1
 
     return ParsedProgram(kinds=kinds, vals=vals, next_expr=next_expr, ntok=ntok, syn_err=syn_err)
+
+
+def tokenize_to_palette_ids(src: str, length: int = TOKEN_COMPOSER_LEN) -> List[int]:
+    """
+    Lex `src` into 8-bit `TOKEN_PALETTE` IDs (`tid = 0..155`) and pad trailing
+    slots up to `length` with `1` (`;` comment character).
+    """
+    if not src.strip():
+        return [1] * length
+    parsed = lex_and_parse_ref(src)
+    if parsed.ntok > length:
+        raise ValueError(f"Program token count {parsed.ntok} exceeds {length}: {src!r}")
+    out: List[int] = []
+    for idx in range(parsed.ntok):
+        key = (parsed.kinds[idx], parsed.vals[idx])
+        if key not in _TOKEN_KIND_VAL_TO_ID:
+            raise ValueError(f"Token {key} at #{idx} in {src!r} is not in TOKEN_PALETTE")
+        out.append(_TOKEN_KIND_VAL_TO_ID[key])
+    out.extend([1] * (length - len(out)))
+    return out
 
 
 # ---------------------------------------------------------------------------

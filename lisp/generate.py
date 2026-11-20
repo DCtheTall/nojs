@@ -4,36 +4,48 @@ Static Pure HTML + Inline CSS Generator for the NoJS Lisp Interpreter (`lisp/ind
 
 Generates a standalone HTML5 document with inline CSS, zero JavaScript, and zero SVG
 that lexes, parses, and evaluates live Lisp S-expressions inside the browser's CSS
-style-recalculation engine using:
-  - 64-character `<select>` keyboard source strip + 8 one-click program presets
-  - Parallel 64-char SIMD lexer (`lx0..lx4`) & packed LSB binary compactor (`cp0..cpu`)
-  - Prefix-depth S-expression `next_expr` parser (`ps0..ps4`) with syntax checking
-  - 92-tick reusable 5-stage shallow-binding CEK VM (`v0..v4` + `vfin`) supporting
-    signed arithmetic (`+`, `-`, `*`, `/`, `mod`), comparisons, `if`, `begin`,
-    mutable `set`/`setq`, lexical `let`, recursive `def`/`defun`, and `fn`/`lambda`.
+style-recalculation engine.
+
+Input ergonomics (100% HTML+CSS, 0 JS):
+  - 40-Slot 8-Bit Quick Token Composer (defaults to all `;` comment chars so it starts blank):
+    * Selectable space (`\u00a0`, `␣`, `.`), `;` comment-to-end, `(`, `)`
+    * All integers `-10` through `100` (covering all `0-99`) + preset milestones (`144, 462, 1071`)
+    * 1-keystroke typeahead (`def`='d', `if`='i', `let`='l', `set`='s', `mod`='m')
+    * Selecting any Showcase Preset writes its tokens directly into `T00..T39` via CSS
+      `--ptid0..39` + `@counter-style` overlays, while any cell can be edited live on top!
+  - Popup-free `<label for="t0">` / `<label for="c0">` focus triggers + `<button type="reset">`
+  - Full 64-Character Raw ASCII Editor (with selectable space, `0-9`, `a-z`, `;`)
 """
 
 from __future__ import annotations
 
+import argparse
 import html
 import os
 import re
-from typing import List
+from typing import List, Sequence
 
 from css_vm import NUM_FUNCS, NUM_VARS, NUM_VM_TICKS, build_lisp_css_spec
 from lisp_ref import (
-    CHAR_TO_CODE,
+    CHAR_COMMENT,
+    CODE_TO_CHAR,
     DEFAULT_PROGRAM,
     MAX_TOKENS,
     PRESETS,
     SELECT_CHARS,
     SOURCE_LEN,
+    TOKEN_COMPOSER_LEN,
+    TOKEN_PALETTE,
+    TOKEN_SELECT_OPTIONS,
+    encode_token_composer_slots,
     eval_lisp_ref,
     pad_source_codes,
+    tokenize_to_palette_ids,
 )
 
 
-BIT6_LETTERS = "abcdef"  # bit 0 (1) -> 'a', ..., bit 5 (32) -> 'f'
+BIT6_LETTERS = "abcdef"    # 6-bit char code: bit 0 (1) -> 'a' .. bit 5 (32) -> 'f'
+BIT8_LETTERS = "abcdefgh"  # 8-bit token ID:  bit 0 (1) -> 'a' .. bit 7 (128) -> 'h'
 
 
 def minify_ui_css(raw: str) -> str:
@@ -43,19 +55,24 @@ def minify_ui_css(raw: str) -> str:
     return s.replace(";}", "}").strip()
 
 
-def generate_html() -> str:
+def _css_escape_str(text: str) -> str:
+    escaped = text.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def generate_html(
+    default_program: str = DEFAULT_PROGRAM,
+    default_tokens: Sequence[str] | None = None,
+    start_in_char_mode: bool = False,
+) -> str:
     spec = build_lisp_css_spec(num_ticks=NUM_VM_TICKS)
     css: List[str] = []
 
     # -----------------------------------------------------------------------
-    # A. @counter-style definitions for symbolic CSS readout (0 JS!)
+    # A. @counter-style definitions for symbolic CSS readout & token overlays
     # -----------------------------------------------------------------------
-    css.append(
-        '@counter-style tok-kind{system:fixed 0;symbols:"·" "(" ")" "NUM" "SYM"}'
-    )
-    css.append(
-        '@counter-style vm-mode{system:fixed 0;symbols:"EVAL" "CONT" "DONE" "ERR" "DIV"}'
-    )
+    css.append('@counter-style tok-kind{system:fixed 0;symbols:"·" "(" ")" "NUM" "SYM"}')
+    css.append('@counter-style vm-mode{system:fixed 0;symbols:"EVAL" "CONT" "DONE" "ERR" "DIV"}')
     css.append(
         '@counter-style err-msg{system:fixed 0;symbols:'
         '"OK — Evaluated Cleanly" '
@@ -66,7 +83,27 @@ def generate_html() -> str:
         f'"Runtime Error: Exceeded {NUM_VM_TICKS}-tick CSS cascade step budget"}}'
     )
 
-    # Register all computed <integer> custom properties
+    # Token Composer live S-expression preview counter-style (0..155)
+    tok_prev_syms = " ".join(
+        _css_escape_str(prev if idx >= 2 else " ")
+        for idx, (_, _, _, prev) in enumerate(TOKEN_PALETTE)
+    )
+    css.append(f"@counter-style tok-src{{system:fixed 0;symbols:{tok_prev_syms}}}")
+
+    # Token Editor cell overlay counter-style (0..155) for rendering active preset / ';' default
+    tok_lbl_syms = " ".join(
+        _css_escape_str("\u00a0" if idx == 0 else lbl)
+        for idx, (lbl, _, _, _) in enumerate(TOKEN_PALETTE)
+    )
+    css.append(f"@counter-style tok-lbl{{system:fixed 0;symbols:{tok_lbl_syms}}}")
+
+    # 64-Char ASCII live code preview counter-style (0..55)
+    char_prev_list = [
+        _css_escape_str(CODE_TO_CHAR.get(c, " ") if c != CHAR_COMMENT else " ")
+        for c in range(56)
+    ]
+    css.append(f"@counter-style chr-src{{system:fixed 0;symbols:{' '.join(char_prev_list)}}}")
+
     for prop in spec.registered_props:
         css.append(f'@property {prop}{{syntax:"<integer>";initial-value:0;inherits:true}}')
 
@@ -79,7 +116,8 @@ body{
   font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
   background:#0b0f17;color:#e2e8f0;line-height:1.5;padding:2rem 1rem 4rem
 }
-.lisp-app{max-width:1040px;margin:0 auto;display:flex;flex-direction:column;gap:1.4rem}
+.lisp-app{max-width:1060px;margin:0 auto;display:flex;flex-direction:column;gap:1.4rem}
+.grid-form{display:block}
 header.hero{
   border:1px solid #1e293b;background:linear-gradient(180deg,#111827,#0f172a);
   border-radius:14px;padding:1.45rem 1.7rem;box-shadow:0 12px 32px rgba(0,0,0,.35)
@@ -103,48 +141,97 @@ header.hero code{color:#e2e8f0;background:#1e293b;padding:.1rem .32rem;border-ra
 .panel-title{font-size:.82rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:#94a3b8}
 .panel-hint{font-size:.79rem;color:#64748b}
 
-.preset-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.55rem;margin-bottom:1rem}
-@media (max-width:780px){.preset-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
-@media (max-width:520px){.preset-grid{grid-template-columns:1fr}}
+.preset-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:.5rem;margin-bottom:.85rem}
+@media (max-width:920px){.preset-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media (max-width:580px){.preset-grid{grid-template-columns:1fr}}
 .pr-lbl{
-  display:flex;flex-direction:column;gap:.18rem;padding:.6rem .8rem;border-radius:9px;
+  display:flex;flex-direction:column;gap:.16rem;padding:.52rem .68rem;border-radius:9px;
   background:#090d16;border:1px solid #263349;cursor:pointer;user-select:none;transition:all .12s
 }
 .pr-lbl:hover{border-color:#475569;background:#0f172a}
-.pr-top{display:flex;align-items:center;gap:.45rem;font-size:.82rem;font-weight:600;color:#e2e8f0}
+.pr-lbl.edit-mode{border-color:#1e3a5f;background:#0a1626}
+.pr-top{display:flex;align-items:center;gap:.4rem;font-size:.77rem;font-weight:600;color:#e2e8f0}
 .pr-top input{accent-color:#38bdf8;cursor:pointer}
 .pr-code{
-  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.71rem;color:#64748b;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.68rem;color:#64748b;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis
 }
-.pr-lbl:has(input:checked){border-color:#38bdf8;background:#0c2136;box-shadow:0 0 0 1px rgba(56,189,248,.25)}
+.pr-lbl:has(input:checked){border-color:#38bdf8;background:#0c2136;box-shadow:0 0 0 1px rgba(56,189,248,.28)}
 .pr-lbl:has(input:checked) .pr-code{color:#7dd3fc}
 
+.kbd-bar{
+  display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:.65rem;
+  margin-bottom:.75rem;padding:.55rem .8rem;border-radius:9px;background:#090d16;border:1px solid #1e293b
+}
+.kbd-actions{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem}
+.kbd-btn{
+  display:inline-flex;align-items:center;gap:.35rem;padding:.38rem .75rem;border-radius:7px;
+  background:#0284c7;color:#f8fafc;font-size:.78rem;font-weight:700;cursor:pointer;user-select:none;
+  border:1px solid #38bdf8;transition:background .12s
+}
+.kbd-btn:hover{background:#0369a1}
+.rst-btn{
+  padding:.38rem .7rem;border-radius:7px;background:#1e293b;color:#cbd5e1;
+  font-size:.77rem;font-weight:600;border:1px solid #334155;cursor:pointer;transition:all .12s
+}
+.rst-btn:hover{background:#334155;color:#f8fafc}
+.kbd-tips{font-size:.74rem;color:#94a3b8;display:flex;flex-wrap:wrap;gap:.35rem .7rem}
+.kbd-tips kbd{
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.71rem;font-weight:700;
+  padding:.08rem .35rem;border-radius:4px;background:#1e293b;color:#7dd3fc;border:1px solid #334155
+}
+
 .preset-banner{
-  display:none;margin-bottom:.85rem;padding:.65rem .9rem;border-radius:8px;
-  background:#0c1e33;border:1px solid #0369a1;color:#bae6fd;font-size:.82rem;
+  display:none;margin-bottom:.75rem;padding:.55rem .85rem;border-radius:8px;
+  background:#0c1e33;border:1px solid #0369a1;color:#bae6fd;font-size:.79rem;
   font-family:ui-monospace,SFMono-Regular,Menlo,monospace
 }
 
+.tok-editor-wrap{display:block}
+.char-editor-wrap,.kbd-for-chr{display:none}
+.lisp-app:has(#pr-edit:checked) .tok-editor-wrap,.lisp-app:has(#pr-edit:checked) .kbd-for-tok{display:none}
+.lisp-app:has(#pr-edit:checked) .kbd-for-chr{display:inline-flex}
+.lisp-app:has(#pr-edit:checked) .char-editor-wrap{display:block}
+
+.tok-editor-grid{
+  display:grid;grid-template-columns:repeat(10,minmax(0,1fr));gap:5px;
+  background:#090d16;padding:9px;border-radius:10px;border:1px solid #263349
+}
+@media (max-width:780px){.tok-editor-grid{grid-template-columns:repeat(5,minmax(0,1fr))}}
 .char-grid{
   display:grid;grid-template-columns:repeat(16,minmax(0,1fr));gap:4px;
   background:#090d16;padding:8px;border-radius:10px;border:1px solid #263349
 }
 @media (max-width:720px){.char-grid{grid-template-columns:repeat(8,minmax(0,1fr))}}
-.cw{display:flex;flex-direction:column;align-items:center;gap:2px}
+.cw{display:flex;flex-direction:column;align-items:center;gap:2px;transition:opacity .12s}
+.tok-editor-grid .cw:has(:checked[cm]) ~ .cw,.char-grid .cw:has(:checked[cm]) ~ .cw{opacity:.24}
+.lisp-app:has(#pr-tok:checked) .tok-editor-grid .cw:has(:checked[def]) ~ .cw{opacity:.24}
 .ci{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.58rem;color:#475569}
+.tsw{position:relative;width:100%}
 select.cc{
-  width:100%;height:2.15rem;appearance:none;-webkit-appearance:none;
+  width:100%;height:2.2rem;appearance:none;-webkit-appearance:none;
   background:#162032;color:#f8fafc;border:1px solid #334155;border-radius:5px;
   text-align:center;text-align-last:center;
-  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.98rem;font-weight:600;
-  cursor:pointer;transition:border-color .12s,background .12s
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.92rem;font-weight:600;
+  cursor:pointer;transition:border-color .12s,background .12s,box-shadow .12s
 }
+select.cc option{color:#f8fafc;background:#0f172a}
+select.cc.tc-sel{height:2.35rem;font-size:.85rem}
+select.cc.tc-sel:has(:checked[def]){color:transparent}
+select.cc.tc-sel:has(:checked:not([def])){border-color:#38bdf8;color:#86efac;background:#10243a}
 select.cc:hover{border-color:#475569;background:#1e293b}
-select.cc:focus{outline:none;border-color:#38bdf8;background:#0f172a;box-shadow:0 0 0 2px rgba(56,189,248,.28)}
+select.cc:focus{outline:none;border-color:#38bdf8;background:#0c2438;box-shadow:0 0 0 2px rgba(56,189,248,.4)}
+.ptok{
+  position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+  pointer-events:none;color:#f8fafc;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.85rem;font-weight:600
+}
+.ptok i{font-style:normal;contain:style}
+.ptok i::after{content:counter(ptv,tok-lbl)}
+.tsw:has(:checked:not([def])) .ptok{display:none}
 
 .ref-bar{
-  margin-top:.75rem;display:flex;flex-wrap:wrap;gap:.45rem .9rem;font-size:.77rem;color:#94a3b8;
+  margin-top:.75rem;display:flex;flex-wrap:wrap;gap:.45rem .85rem;font-size:.76rem;color:#94a3b8;
   background:#090d16;padding:.55rem .8rem;border-radius:8px;border:1px solid #1e293b
 }
 .ref-bar code{color:#7dd3fc;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
@@ -156,6 +243,20 @@ select.cc:focus{outline:none;border-color:#38bdf8;background:#0f172a;box-shadow:
   order:-3;border:1px solid #0284c7;background:linear-gradient(180deg,#0c192c,#0b1322);
   border-radius:14px;padding:1.4rem 1.6rem;box-shadow:0 0 36px rgba(14,165,233,.14)
 }
+.src-echo{
+  margin-bottom:.9rem;padding:.55rem .85rem;border-radius:8px;
+  background:#060a12;border:1px solid #1e3a5f;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.88rem;color:#7dd3fc
+}
+.src-echo-lbl{color:#64748b;font-size:.69rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;margin-right:.5rem}
+.src-tok-view{display:inline}
+.src-chr-view{display:none}
+.lisp-app:has(#pr-edit:checked) .src-tok-view{display:none}
+.lisp-app:has(#pr-edit:checked) .src-chr-view{display:inline}
+.src-tok-view i,.src-chr-view i{font-style:normal;contain:style}
+.src-tok-view i::after{content:counter(tpv,tok-src)}
+.src-chr-view i::after{content:counter(cpv,chr-src)}
+
 .res-grid{display:grid;grid-template-columns:1fr auto auto;gap:.9rem;align-items:stretch}
 @media (max-width:720px){.res-grid{grid-template-columns:1fr}}
 .res-box{
@@ -243,28 +344,38 @@ select.cc:focus{outline:none;border-color:#38bdf8;background:#0f172a;box-shadow:
     css.append(minify_ui_css(ui_css))
 
     # -----------------------------------------------------------------------
-    # C. Input Decoding Rules (:root defaults, 384 :has() rules, & 8 Presets)
+    # C. Input Decoding Rules (:root ';' blank default, Presets -> Token Editor, 8-bit :has())
     # -----------------------------------------------------------------------
-    b_defaults = ";".join(f"--b{i}_{b}:0" for i in range(SOURCE_LEN) for b in range(6))
-    css.append(f":root{{{b_defaults}}}")
+    root_decls = ["--use_tok:1"]
+    root_decls.extend(f"--ptid{i}:1" for i in range(TOKEN_COMPOSER_LEN))
+    root_decls.extend(f"--ovr{i}:0" for i in range(TOKEN_COMPOSER_LEN))
+    root_decls.extend(f"--tb{i}_{b}:0" for i in range(TOKEN_COMPOSER_LEN) for b in range(8))
+    root_decls.extend(f"--b{i}_{b}:0" for i in range(SOURCE_LEN) for b in range(6))
+    css.append(f":root{{{';'.join(root_decls)}}}")
+
+    css.append(".lisp-app:has(#pr-edit:checked){--use_tok:0}")
+
+    for slot in range(TOKEN_COMPOSER_LEN):
+        css.append(f".lisp-app:has(#t{slot} :checked:not([def])){{--ovr{slot}:1}}")
+        css.append(f".ptok{slot}{{counter-reset:ptv var(--ptid{slot})}}")
+        for bit_idx, bchar in enumerate(BIT8_LETTERS):
+            css.append(f".lisp-app:has(#t{slot} :checked[b*={bchar}]){{--tb{slot}_{bit_idx}:1}}")
 
     for slot in range(SOURCE_LEN):
         for bit_idx, bchar in enumerate(BIT6_LETTERS):
             css.append(f".lisp-app:has(#c{slot} :checked[b*={bchar}]){{--b{slot}_{bit_idx}:1}}")
 
-    for pid, title, src, exp_val in PRESETS:
-        codes = pad_source_codes(src, SOURCE_LEN)
-        p_decls: List[str] = []
-        for slot, code in enumerate(codes):
-            for bit_idx in range(6):
-                p_decls.append(f"--b{slot}_{bit_idx}:{(code >> bit_idx) & 1}")
-        css.append(f".lisp-app.lisp-app:has(#pr-{pid}:checked){{{';'.join(p_decls)}}}")
+    preset_dim_selectors: List[str] = []
+    for pid, _title, src, _exp_val in PRESETS:
+        ptids = tokenize_to_palette_ids(src, TOKEN_COMPOSER_LEN)
+        p_decls = [f"--ptid{slot}:{ptid}" for slot, ptid in enumerate(ptids)]
+        css.append(f".lisp-app:has(#pr-{pid}:checked){{{';'.join(p_decls)}}}")
         css.append(f".lisp-app:has(#pr-{pid}:checked) #bn-{pid}{{display:block}}")
-
-    css.append(
-        ".lisp-app:has(input[name=preset]:not(#pr-edit):checked) .char-grid"
-        "{opacity:.42;pointer-events:none}"
-    )
+        ntok_p = sum(1 for ptid in ptids if ptid != 1)
+        for k in range(ntok_p, TOKEN_COMPOSER_LEN - 1):
+            preset_dim_selectors.append(f".lisp-app:has(#pr-{pid}:checked) #tw{k}:has(:checked[def]) ~ .cw")
+    if preset_dim_selectors:
+        css.append(f"{','.join(preset_dim_selectors)}{{opacity:.24}}")
 
     # -----------------------------------------------------------------------
     # D. Compiled Lexer, Compactor, Parser, & Reusable 5-Stage VM CSS Rules
@@ -274,8 +385,21 @@ select.cc:focus{outline:none;border-color:#38bdf8;background:#0f172a;box-shadow:
         css.append(f".{cls_name}{{{body}}}")
 
     # -----------------------------------------------------------------------
-    # E. Dynamic Output, Error, AST Token, Env, & Trace Counter Bindings
+    # E. Dynamic Output, Live Source Preview, Error, AST, Env, & Trace Rules
     # -----------------------------------------------------------------------
+    for i in range(TOKEN_COMPOSER_LEN):
+        css.append(
+            f".tkp{i}{{counter-reset:tpv var(--tvis{i});"
+            f"font-size:calc(1em*clamp(0,var(--tvis{i}) - 1,1))}}"
+        )
+    for i in range(SOURCE_LEN):
+        css.append(f".chp{i}{{counter-reset:cpv var(--ch{i})}}")
+
+    css.append(
+        "#lisp-empty-hint{color:#64748b;"
+        "opacity:calc(1 - min(1,var(--ntok)));"
+        "font-size:calc(.84rem*(1 - min(1,var(--ntok))))}"
+    )
     css.append(".res-val i{counter-reset:ans var(--acc)}")
     css.append("#lisp-result{opacity:calc(1 - .65*min(1,var(--f_err)))}")
     css.append(".st-cnt i{counter-reset:stc var(--steps)}")
@@ -312,7 +436,6 @@ select.cc:focus{outline:none;border-color:#38bdf8;background:#0f172a;box-shadow:
         )
 
     css.append(".tr-row{counter-reset:md var(--mode) pcv var(--pc) acv var(--acc) spv var(--sp)}")
-    # Trace ticks sampled cleanly: ticks 1..20 every tick, plus every 4th tick up to NUM_VM_TICKS
     sampled_ticks = list(range(1, 21)) + list(range(24, NUM_VM_TICKS + 1, 4))
     for t in sampled_ticks:
         css.append(f".tr-t{t}{{opacity:calc(.24 + .76*clamp(0,var(--steps) - {t - 1},1))}}")
@@ -320,30 +443,74 @@ select.cc:focus{outline:none;border-color:#38bdf8;background:#0f172a;box-shadow:
     # -----------------------------------------------------------------------
     # F. HTML Controls, Pipeline DOM Nesting, & Inspector Cards
     # -----------------------------------------------------------------------
-    default_codes = pad_source_codes(DEFAULT_PROGRAM, SOURCE_LEN)
+    padded_char_src = default_program if len(default_program) >= SOURCE_LEN - 1 else f"{default_program} ;"
+    default_codes = pad_source_codes(padded_char_src[:SOURCE_LEN], SOURCE_LEN)
+
+    explicit_tids: List[int] | None = (
+        encode_token_composer_slots(default_tokens, TOKEN_COMPOSER_LEN)
+        if default_tokens is not None
+        else None
+    )
+
+    def build_token_select(slot: int) -> str:
+        use_def = explicit_tids is None or slot >= len(default_tokens or ())
+        def_sel = " selected" if use_def else ""
+        opts: List[str] = [f"<option hidden def{def_sel}></option>"]
+        selected_emitted = use_def
+        target_tid = -1 if explicit_tids is None else explicit_tids[slot]
+        for disp_lbl, tid, is_cm in TOKEN_SELECT_OPTIONS:
+            b_str = "".join(BIT8_LETTERS[b] for b in range(8) if (tid >> b) & 1)
+            b_attr = f" b={b_str}" if b_str else ""
+            cm_attr = " cm" if is_cm else ""
+            is_sel = (not selected_emitted) and (tid == target_tid)
+            if is_sel:
+                selected_emitted = True
+            sel_attr = " selected" if is_sel else ""
+            opts.append(f"<option{b_attr}{cm_attr}{sel_attr}>{html.escape(disp_lbl)}")
+        return (
+            f'<div class=cw id=tw{slot}><span class=ci>T{slot:02d}</span>'
+            f'<div class=tsw>'
+            f'<select id=t{slot} class="cc tc-sel" aria-label="Token slot {slot}">'
+            f'{"".join(opts)}</select>'
+            f'<span class="ptok ptok{slot}"><i></i></span>'
+            f'</div></div>'
+        )
 
     def build_char_select(slot: int, default_code: int) -> str:
         opts: List[str] = []
-        for ch in SELECT_CHARS:
-            code = CHAR_TO_CODE[ch]
+        selected_emitted = False
+        for disp_lbl, code, is_cm in SELECT_CHARS:
             b_str = "".join(BIT6_LETTERS[b] for b in range(6) if (code >> b) & 1)
             b_attr = f" b={b_str}" if b_str else ""
-            sel_attr = " selected" if code == default_code else ""
-            disp = "␣" if ch == " " else html.escape(ch)
-            opts.append(f"<option{b_attr}{sel_attr}>{disp}")
+            cm_attr = " cm" if is_cm else ""
+            is_sel = (code == default_code) and not selected_emitted
+            if is_sel:
+                selected_emitted = True
+            sel_attr = " selected" if is_sel else ""
+            opts.append(f"<option{b_attr}{cm_attr}{sel_attr}>{html.escape(disp_lbl)}")
         return (
             f'<div class=cw><span class=ci>{slot:02d}</span>'
             f'<select id=c{slot} class=cc aria-label="Source character {slot}">'
             f'{"".join(opts)}</select></div>'
         )
 
-    selects_html = "".join(build_char_select(i, default_codes[i]) for i in range(SOURCE_LEN))
+    tok_selects_html = "".join(build_token_select(i) for i in range(TOKEN_COMPOSER_LEN))
+    char_selects_html = "".join(build_char_select(i, default_codes[i]) for i in range(SOURCE_LEN))
+
+    tok_checked = "" if start_in_char_mode else " checked"
+    chr_checked = " checked" if start_in_char_mode else ""
+    default_res = eval_lisp_ref(default_program)
+    default_disp = str(default_res.value) if default_res.err == 0 else "ERR"
 
     preset_cards_html: List[str] = [
-        '<label class=pr-lbl for=pr-edit>'
-        '<span class=pr-top><input type=radio name=preset id=pr-edit checked>'
-        '<span>Custom 64-Char Editor</span></span>'
-        f'<span class=pr-code>{html.escape(DEFAULT_PROGRAM)} &rarr; 84</span></label>'
+        '<label class="pr-lbl edit-mode" for=pr-tok>'
+        f'<span class=pr-top><input type=radio name=preset id=pr-tok{tok_checked}>'
+        '<span>Blank Token Editor (;)</span></span>'
+        '<span class=pr-code>; ; ; ... (blank — type from T00)</span></label>',
+        '<label class="pr-lbl edit-mode" for=pr-edit>'
+        f'<span class=pr-top><input type=radio name=preset id=pr-edit{chr_checked}>'
+        '<span>Raw 64-Char Editor</span></span>'
+        f'<span class=pr-code>{html.escape(default_program)} &rarr; {default_disp}</span></label>',
     ]
     preset_banners_html: List[str] = []
     for pid, title, src, exp_val in PRESETS:
@@ -355,9 +522,13 @@ select.cc:focus{outline:none;border-color:#38bdf8;background:#0f172a;box-shadow:
         )
         preset_banners_html.append(
             f'<div class=preset-banner id=bn-{pid}>'
-            f'Preset Active: <strong>{html.escape(src)}</strong> &mdash; Expected Result: <strong>{exp_val}</strong> '
-            f'(Select &ldquo;Custom 64-Char Editor&rdquo; above to edit individual characters)</div>'
+            f'Preset written into Token Editor below: <strong>{html.escape(src)}</strong> '
+            f'&mdash; Default Result: <strong>{exp_val}</strong> '
+            f'(Edit any <strong>T00..T39</strong> cell live, or click <strong>&#x21BA; Clear Cell Edits</strong> to restore)</div>'
         )
+
+    tok_prev_spans = "".join(f"<i class=tkp{i}></i>" for i in range(TOKEN_COMPOSER_LEN))
+    chr_prev_spans = "".join(f"<i class=chp{i}></i>" for i in range(SOURCE_LEN))
 
     tok_cells_html = "".join(
         f'<span class="tok-cell tc{i}">'
@@ -379,6 +550,12 @@ select.cc:focus{outline:none;border-color:#38bdf8;background:#0f172a;box-shadow:
         '<div class=panel-head>'
         '<span class=panel-title style="color:#7dd3fc">Live Lisp Evaluation Result</span>'
         '<span class=panel-hint style="color:#38bdf8">Lexed, Parsed &amp; Evaluated 100% by CSS @property &amp; calc()</span>'
+        '</div>'
+        '<div class=src-echo id=lisp-active-src>'
+        '<span class=src-echo-lbl>Active S-Expr:</span>'
+        '<span id=lisp-empty-hint>; (blank — type in T00 or select a preset)</span>'
+        f'<span class=src-tok-view>{tok_prev_spans}</span>'
+        f'<span class=src-chr-view>{chr_prev_spans}</span>'
         '</div>'
         '<div class=res-grid>'
         '<div class=res-box><span class=res-lbl>Return Value (--acc)</span>'
@@ -403,7 +580,6 @@ select.cc:focus{outline:none;border-color:#38bdf8;background:#0f172a;box-shadow:
         '</section>'
     )
 
-    # Build nested `display: contents` compute pipeline + interleaved VM trace rows
     sampled_set = set(sampled_ticks)
     pipeline_open: List[str] = []
     depth_count = 0
@@ -434,8 +610,6 @@ select.cc:focus{outline:none;border-color:#38bdf8;background:#0f172a;box-shadow:
                     f'</article>'
                 )
 
-    default_val = eval_lisp_ref(DEFAULT_PROGRAM).value
-
     return (
         "<!DOCTYPE html>\n<html lang=en>\n<head>\n<meta charset=utf-8>\n"
         "<meta name=viewport content='width=device-width,initial-scale=1'>\n"
@@ -445,23 +619,39 @@ select.cc:focus{outline:none;border-color:#38bdf8;background:#0f172a;box-shadow:
         "<div class=badge-row>"
         "<span class='badge green'>0 Bytes JavaScript</span>"
         "<span class=badge>0 SVG Filters / 0 SMIL</span>"
-        "<span class='badge purple'>Parallel SIMD Lexer + S-Expr Parser</span>"
+        "<span class='badge purple'>8-Bit Token Composer (0-99 + Presets)</span>"
         "<span class=badge>Shallow-Binding Recursion + Higher-Order Fns</span>"
         "</div>"
         "<h1>Pure HTML + CSS Lisp Interpreter</h1>"
         "<p>Live S-expression lexing, parenthesis matching, lexical &amp; mutable environments, and recursive "
         "function evaluation executed strictly inside browser CSS style recalculation via "
         "<code>@property &lt;integer&gt;</code> wires, <code>calc()/clamp()/mod()</code> ALU gates, and "
-        f"reusable <code>display: contents</code> VM stages. Default program (<code>{html.escape(DEFAULT_PROGRAM)}</code>): "
-        f"<code>{default_val}</code>.</p></header>\n"
+        "reusable <code>display: contents</code> VM stages. Starts on a blank <code>;</code> Token Editor &mdash; "
+        "type directly from <code>T00</code> or click any preset to load &amp; edit its tokens live.</p></header>\n"
         '<section class=panel aria-label="Lisp Program Input">'
         "<div class=panel-head>"
-        "<span class=panel-title>1. Program Presets &amp; 64-Character Live Source Buffer</span>"
-        "<span class=panel-hint>Pick a preset or select Custom Editor &amp; type keys in cells (<code>Tab</code> advances; <code>&#x2423;</code> = space)</span>"
+        "<span class=panel-title>1. Input Mode, Presets &amp; Keyboard S-Expression Composer</span>"
+        "<span class=panel-hint>Clicking any preset writes it into the Token Editor; click the blue focus button to type with keys + <code>Tab</code></span>"
         "</div>"
         f"<div class=preset-grid>{''.join(preset_cards_html)}</div>"
         f"{''.join(preset_banners_html)}"
-        f"<div class=char-grid>{selects_html}</div>"
+        "<form class=grid-form>"
+        "<div class=kbd-bar>"
+        "<div class=kbd-actions>"
+        "<label for=t0 class='kbd-btn kbd-for-tok'>&#x2328; Focus Token T00 &amp; Start Typing</label>"
+        "<label for=c0 class='kbd-btn kbd-for-chr'>&#x2328; Focus Char 00 &amp; Start Typing</label>"
+        "<button type=reset class=rst-btn>&#x21BA; Clear Cell Edits</button>"
+        "</div>"
+        "<div class=kbd-tips>"
+        "<span><kbd>Tab</kbd> / <kbd>Shift+Tab</kbd> move cell</span>"
+        "<span>Space / <kbd>&#x2423;</kbd> / <kbd>.</kbd> blank</span>"
+        "<span><kbd>;</kbd> comment to end</span>"
+        "<span>All <kbd>0</kbd>&ndash;<kbd>99</kbd> selectable</span>"
+        "<span>1-key: <kbd>d</kbd>=def <kbd>i</kbd>=if <kbd>l</kbd>=let <kbd>s</kbd>=set <kbd>m</kbd>=mod</span>"
+        "</div></div>"
+        f"<div class=tok-editor-wrap><div class=tok-editor-grid>{tok_selects_html}</div></div>"
+        f"<div class=char-editor-wrap><div class=char-grid>{char_selects_html}</div></div>"
+        "</form>"
         "<div class=ref-bar>"
         "<span>Supported forms:</span>"
         "<code>(+ - * / mod % = &lt; &gt; &lt;= &gt;= not)</code>"
@@ -478,12 +668,27 @@ select.cc:focus{outline:none;border-color:#38bdf8;background:#0f172a;box-shadow:
 
 
 def main() -> None:
-    out_dir = os.path.dirname(os.path.abspath(__file__))
-    out_path = os.path.join(out_dir, "index.html")
-    content = generate_html()
-    with open(out_path, "w", encoding="utf-8") as f:
+    parser = argparse.ArgumentParser(description="Generate standalone zero-JS HTML+CSS Lisp interpreter.")
+    parser.add_argument(
+        "-p", "--program",
+        default=None,
+        help="Optional Lisp program string (<= 64 chars) to pre-load into the 64-char editor on startup.",
+    )
+    parser.add_argument(
+        "-o", "--output",
+        default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html"),
+        help="Output HTML file path (defaults to lisp/index.html).",
+    )
+    args = parser.parse_args()
+
+    if args.program is not None:
+        content = generate_html(default_program=args.program, start_in_char_mode=True)
+    else:
+        content = generate_html()
+
+    with open(args.output, "w", encoding="utf-8") as f:
         f.write(content)
-    print(f"Wrote {out_path} ({len(content) / 1024:.1f} KB)")
+    print(f"Wrote {args.output} ({len(content) / 1024:.1f} KB)")
 
 
 if __name__ == "__main__":

@@ -19,10 +19,18 @@ import re
 import unittest
 from typing import List
 
-from css_vm import MODE_DONE, MODE_ERR, LispCSSSpec, build_lisp_css_spec, simulate_css_lisp
+from css_vm import (
+    MODE_DONE,
+    MODE_ERR,
+    LispCSSSpec,
+    build_lisp_css_spec,
+    simulate_css_lisp,
+    simulate_css_token_composer,
+)
 from generate import generate_html
 from lisp_ref import (
     DEFAULT_PROGRAM,
+    DEFAULT_TOKEN_LIST,
     ERR_CALL,
     ERR_DIV_ZERO,
     ERR_NONE,
@@ -31,6 +39,8 @@ from lisp_ref import (
     ERR_UNBOUND,
     MAX_TOKENS,
     PRESETS,
+    SELECT_CHARS,
+    TOKEN_SELECT_OPTIONS,
     eval_lisp_ref,
     lex_and_parse_ref,
 )
@@ -165,6 +175,71 @@ class TestNoJSLisp(unittest.TestCase):
     def test_zero_arg_fn_and_first_class_lambda(self) -> None:
         self._assert_eval_matches("(def k () 37) (+ (k) 5)", 42)
         self._assert_eval_matches("(let ((sq (fn (x) (* x x)))) (+ (sq 5) (sq 12)))", 169)
+
+    def test_ergonomic_token_composer_comments_and_cli_program(self) -> None:
+        # 1. Selectable space ('\u00a0', '␣', '.') in both 64-char and Token Editor dropdowns
+        char_disp_map = {lbl: code for lbl, code, _ in SELECT_CHARS}
+        tok_disp_map = {lbl: tid for lbl, tid, _ in TOKEN_SELECT_OPTIONS}
+        for sp_lbl in ("\u00a0", "␣", "."):
+            self.assertEqual(char_disp_map.get(sp_lbl), 0)
+            self.assertEqual(tok_disp_map.get(sp_lbl), 0)
+
+        self._assert_eval_matches("(+\u00a0(* 6␣7).10); )))) leftover garbage", 52)
+
+        # 2. All numbers 0-99 are selectable options and evaluate accurately in the CSS Token Composer
+        for n in range(100):
+            s_n = str(n)
+            self.assertIn(s_n, tok_disp_map, f"Number {n} missing from TOKEN_SELECT_OPTIONS")
+            res_n = simulate_css_token_composer([s_n], self.spec)
+            self.assertEqual(res_n["--f_mode"], MODE_DONE)
+            self.assertEqual(res_n["--acc"], n)
+
+        two_digit_arith = simulate_css_token_composer(["(", "*", "19", "23", ")"], self.spec)
+        self.assertEqual(two_digit_arith["--f_mode"], MODE_DONE)
+        self.assertEqual(two_digit_arith["--acc"], 437)
+
+        # 3. Default Blank Token Editor (all ';' comment characters) starts blank -> 0 tokens, acc = 0
+        blank_env = simulate_css_token_composer((), self.spec)
+        self.assertEqual(blank_env["--ntok"], 0)
+        self.assertEqual(blank_env["--f_mode"], MODE_DONE)
+        self.assertEqual(blank_env["--f_err"], ERR_NONE)
+        self.assertEqual(blank_env["--acc"], 0)
+
+        # 4. Every Showcase Preset writes into the Token Editor (`--ptid0..39`) and evaluates cleanly
+        for pid, _title, src, exp in PRESETS:
+            with self.subTest(token_preset=pid):
+                p_env = simulate_css_token_composer((), self.spec, preset_src=src)
+                self.assertEqual(p_env["--f_mode"], MODE_DONE)
+                self.assertEqual(p_env["--f_err"], ERR_NONE)
+                self.assertEqual(p_env["--acc"], exp)
+
+        # 5. Live per-cell user overrides on top of a preset written into the Token Editor
+        fact_src = dict((pid, src) for pid, _, src, _ in PRESETS)["rec-fact"]
+        # Token 30 in `(def fact (n) (if (< n 2) 1 (* n (fact (- n 1))))) (fact 8)` is `"8"`
+        fact_6 = simulate_css_token_composer((), self.spec, preset_src=fact_src, overrides={30: "6"})
+        self.assertEqual(fact_6["--f_mode"], MODE_DONE)
+        self.assertEqual(fact_6["--acc"], 720)
+
+        # 6. Token Composer with interior space/blank gaps ('\u00a0', '␣', '.') and ';' comment
+        tok_default = simulate_css_token_composer(DEFAULT_TOKEN_LIST, self.spec)
+        self.assertEqual(tok_default["--f_mode"], MODE_DONE)
+        self.assertEqual(tok_default["--acc"], 84)
+
+        fact_tokens = [
+            "(", "def", "fact", "(", "n", ")",
+            "(", "if", "(", "<", "n", "2", ")", "1",
+            "(", "*", "n", "\u00a0", "(", "fact", "␣", "(", "-", "n", "1", ")", ")", ")",
+            ")", ")",
+            "(", "fact", "7", ")", ";", ")", "(",
+        ]
+        tok_fact = simulate_css_token_composer(fact_tokens, self.spec)
+        self.assertEqual(tok_fact["--f_mode"], MODE_DONE)
+        self.assertEqual(tok_fact["--acc"], 5040)
+
+        # 7. Custom CLI `--program` HTML generation sanity check
+        custom_html = generate_html(default_program="(def sq (x) (* x x)) (sq 19)", start_in_char_mode=True)
+        self.assertIn("id=pr-edit checked", custom_html)
+        self.assertIn("&rarr; 361", custom_html)
 
     def test_syntax_and_runtime_errors(self) -> None:
         err_cases = [
