@@ -500,14 +500,62 @@ class Circuit:
         )
 
 
+def format_mod2_sum(terms: Sequence[str], invert: bool = False) -> str:
+    """
+    Format a GF(2) sum of `{0, 1}` expressions (e.g. `var(--a)`, `var(--a)*var(--b)`)
+    into a minimal CSS `<integer>` expression using `mod(..., 2)` when needed.
+    """
+    items = list(terms)
+    if invert:
+        if not items:
+            return "1"
+        if len(items) == 1 and "*" not in items[0]:
+            return f"calc(1 - {items[0]})"
+        return f"mod(1 + {' + '.join(items)},2)"
+    if not items:
+        return "0"
+    if len(items) == 1:
+        return f"calc({items[0]})" if "*" in items[0] else items[0]
+    return f"mod({' + '.join(items)},2)"
+
+
+def mobius_anf_4bit(truth_table_16: Sequence[int], var_names: Sequence[str], invert_out: bool = False) -> str:
+    """
+    Compute the exact Algebraic Normal Form (polynomial over GF(2)) of a 4-input
+    boolean function `f(v0, v1, v2, v3)` where index = (v0<<3)|(v1<<2)|(v2<<1)|v3,
+    returning a compact CSS `mod(..., 2)` expression.
+    """
+    assert len(truth_table_16) == 16 and len(var_names) == 4
+    coef = list(truth_table_16)
+    # Fast binary Mobius transform over GF(2)^4
+    for bit in range(4):
+        step = 1 << bit
+        for mask in range(16):
+            if mask & step:
+                coef[mask] ^= coef[mask ^ step]
+
+    # Note: bit 3 corresponds to var_names[0], bit 0 to var_names[3]
+    const_one = bool(coef[0]) ^ invert_out
+    terms: List[str] = []
+    for mask in range(1, 16):
+        if coef[mask]:
+            factors = [var_names[3 - b] for b in range(3, -1, -1) if (mask >> b) & 1]
+            terms.append("*".join(factors))
+    return format_mod2_sum(terms, invert=const_one)
+
+
 def simulate_css_layers(
     assignment: LayerAssignment,
     initial_vars: Dict[str, int],
 ) -> Dict[str, int]:
     """
     Simulates browser CSS custom-property inheritance across the nested <div> stages
-    to prove the compiled CSS expressions match Circuit.evaluate() bit-for-bit.
+    (supporting both `calc(...)` and `mod(..., 2)`) to prove the compiled CSS
+    expressions match Circuit.evaluate() bit-for-bit.
     """
+    def _mod(a: int, b: int) -> int:
+        return a % b
+
     env = dict(initial_vars)
     for st_idx, rules in enumerate(assignment.layer_rules):
         next_env = dict(env)
@@ -530,7 +578,7 @@ def simulate_css_layers(
                     out_chars.append(expr[i])
                     i += 1
             py_expr = "".join(out_chars)
-            val = int(eval(py_expr, {"__builtins__": {}}, {}))
+            val = int(eval(py_expr, {"__builtins__": {}}, {"mod": _mod}))
             next_env[lhs] = val
         env = next_env
     return env
