@@ -173,7 +173,7 @@ select.cc:focus{outline:none;border-color:#38bdf8;background:#0f172a;box-shadow:
   border-radius:10px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
   font-size:1.25rem;font-weight:700;letter-spacing:.04em;color:#38bdf8;line-height:1.7
 }
-.hx i{font-style:normal;contain:style;display:inline-block}
+.hx i{font-style:normal;display:inline-block}
 .hx i::after{content:counter(h,hex-digit)}
 .hx i:nth-child(2n):not(:last-child){margin-right:.55ch}
 
@@ -186,7 +186,7 @@ select.cc:focus{outline:none;border-color:#38bdf8;background:#0f172a;box-shadow:
   font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.92rem;font-weight:600;color:#e2e8f0
 }
 .mc-cell{display:block;background:#111c2d;border:1px solid #24354d;border-radius:5px;padding:.35rem 0;text-align:center}
-.mc-cell i{font-style:normal;contain:style}
+.mc-cell i{font-style:normal}
 .mc-cell i::after{content:counter(h,hex-digit)}
 .led-grid{
   display:grid;grid-template-columns:repeat(16,minmax(0,1fr));gap:4px;

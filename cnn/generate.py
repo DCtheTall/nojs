@@ -42,18 +42,22 @@ from svg_cnn import (
     C5_LUTX_POS,
     C5_LUTY_POS,
     CNN_DIR,
+    COMPUTE_STAGE_IDS,
     IN_LUTX_POS,
     IN_LUTY_POS,
     INPUT_PREVIEW_SZ,
     INPUT_PREVIEW_X,
     INPUT_PREVIEW_Y,
+    INPUT_SRC_Y,
     LAYER_VIEWS,
+    SPLIT_VISUAL_LAYERS,
     STAGE_H,
     STAGE_W,
     TILE_LUTX_POS,
     TILE_LUTY_POS,
     WEIGHTS_DEFAULT_PATH,
     compile_compute_stages,
+    compile_pre_filters,
     compile_visual_stage,
     load_weights,
     simulate_svg_cnn,
@@ -134,7 +138,7 @@ def write_sample_digit_assets(spec: dict) -> Tuple[str, List[Tuple[int, str, int
                 paper[..., c] = bg_rgb[c] * (1.0 - alpha_s) + ink_rgb[c] * alpha_s
             paper_u8 = np.clip(np.round(paper + noise), 0, 255).astype(np.uint8)
             sim = simulate_svg_cnn(paper_u8, spec, auto_polarity=True)
-            if sim.pred == d and float(sim.probs[d]) >= 0.80:
+            if sim.pred == d and float(sim.probs[d]) >= 0.85:
                 chosen_paper = paper_u8
                 chosen_sim = sim
                 break
@@ -159,52 +163,60 @@ def generate_html(weights_path: str = WEIGHTS_DEFAULT_PATH) -> str:
     lut_paths = write_filter_lut_assets(ASSETS_DIR)
     default_rel, mnist_cards, paper_cards = write_sample_digit_assets(spec)
 
-    svg_filters: List[str] = []
+    svg_defs: List[str] = list(compile_pre_filters())
     for dpr in (1, 2):
-        svg_filters.extend(compile_compute_stages(spec, dpr))
+        svg_defs.extend(compile_compute_stages(spec, dpr))
 
     dyn_css: List[str] = []
     hidpi_css: List[str] = []
-    tile_lut_divs: List[str] = []
+    tile_luts_1x: List[str] = []
+    tile_luts_2x: List[str] = []
 
-    for s_idx in range(1, 7):
-        dyn_css.append(f".cnn-s{s_idx}{{filter:url(#cnn-s{s_idx}-1x)}}")
-        hidpi_css.append(f".cnn-s{s_idx}{{filter:url(#cnn-s{s_idx}-2x)}}")
+    for sid in COMPUTE_STAGE_IDS:
+        dyn_css.append(f".cnn-{sid}{{filter:url(#cnn-{sid}-1x)}}")
+        hidpi_css.append(f".cnn-{sid}{{filter:url(#cnn-{sid}-2x)}}")
 
-    # Lock Display-P3-immune neutral-gray 1D LUTs to the exact same CSS @media query as 1x/2x SVG filters!
-    dyn_css.append(f".lut-inx{{background-image:url({lut_paths['in_x_1x']})}}")
-    hidpi_css.append(f".lut-inx{{background-image:url({lut_paths['in_x_2x']})}}")
-    dyn_css.append(f".lut-iny{{background-image:url({lut_paths['in_y_1x']})}}")
-    hidpi_css.append(f".lut-iny{{background-image:url({lut_paths['in_y_2x']})}}")
-    dyn_css.append(f".lut-c5x{{background-image:url({lut_paths['c5_x_1x']})}}")
-    hidpi_css.append(f".lut-c5x{{background-image:url({lut_paths['c5_x_2x']})}}")
-    dyn_css.append(f".lut-c5y{{background-image:url({lut_paths['c5_y_1x']})}}")
-    hidpi_css.append(f".lut-c5y{{background-image:url({lut_paths['c5_y_2x']})}}")
-    dyn_css.append(f".lut-am{{background-image:url({lut_paths['anchor_1x']})}}")
-    hidpi_css.append(f".lut-am{{background-image:url({lut_paths['anchor_2x']})}}")
+    dyn_css.append(".cnn-app:has(#opt-invert:checked) .cnn-s1{filter:url(#cnn-s1i-1x)}")
+    hidpi_css.append(".cnn-app:has(#opt-invert:checked) .cnn-s1{filter:url(#cnn-s1i-2x)}")
+    dyn_css.append(".cnn-app:has(#opt-contrast:checked) .cnn-pre{filter:url(#cnn-pre-con)}")
+
+    lyr_active_lbl = ",".join(f".cnn-app:has(#lyr-{k}:checked) label[for=lyr-{k}]" for k, *_ in LAYER_VIEWS)
+    lyr_active_meta = ",".join(f".cnn-app:has(#lyr-{k}:checked) label[for=lyr-{k}] .lyr-meta" for k, *_ in LAYER_VIEWS)
+    dyn_css.append(f"{lyr_active_lbl}{{border-color:#38bdf8;background:#0c2136;box-shadow:0 0 0 1px rgba(56,189,248,.3)}}")
+    dyn_css.append(f"{lyr_active_meta}{{color:#7dd3fc}}")
 
     tlx_x, tlx_y = TILE_LUTX_POS
     tly_x, tly_y = TILE_LUTY_POS
 
     for key, _, _, _, coords, _, _, (_, _, cell_zoom, _) in LAYER_VIEWS:
         for dpr in (1, 2):
-            svg_filters.append(compile_visual_stage(key, dpr))
+            svg_defs.extend(compile_visual_stage(key, dpr))
 
-        dyn_css.append(f".cnn-app:has(#lyr-{key}:checked) .cnn-vis{{filter:url(#cnn-vis-{key}-1x)}}")
-        hidpi_css.append(f".cnn-app:has(#lyr-{key}:checked) .cnn-vis{{filter:url(#cnn-vis-{key}-2x)}}")
+        if key in SPLIT_VISUAL_LAYERS:
+            dyn_css.append(f".cnn-app:has(#lyr-{key}:checked) .cnn-visa{{filter:url(#cnn-visa-{key}-1x)}}")
+            dyn_css.append(f".cnn-app:has(#lyr-{key}:checked) .cnn-visb{{filter:url(#cnn-visb-{key}-1x)}}")
+            hidpi_css.append(f".cnn-app:has(#lyr-{key}:checked) .cnn-visa{{filter:url(#cnn-visa-{key}-2x)}}")
+            hidpi_css.append(f".cnn-app:has(#lyr-{key}:checked) .cnn-visb{{filter:url(#cnn-visb-{key}-2x)}}")
+        else:
+            dyn_css.append(f".cnn-app:has(#lyr-{key}:checked) .cnn-visa{{filter:url(#cnn-vis-{key}-1x)}}")
+            dyn_css.append(f".cnn-app:has(#lyr-{key}:checked) .cnn-visb{{filter:none}}")
+            hidpi_css.append(f".cnn-app:has(#lyr-{key}:checked) .cnn-visa{{filter:url(#cnn-vis-{key}-2x)}}")
+            hidpi_css.append(f".cnn-app:has(#lyr-{key}:checked) .cnn-visb{{filter:none}}")
+
         dyn_css.append(f".cnn-app:has(#lyr-{key}:checked) .ldesc-{key}{{display:block}}")
         dyn_css.append(f".cnn-app:has(#lyr-{key}:checked) .tgrid-{key}{{display:block}}")
 
         if key != "dwconv4":
             tw = len(coords) * cell_zoom
-            dyn_css.append(f".cnn-app:has(#lyr-{key}:checked) .tlutx-{key}{{display:block}}")
-            dyn_css.append(f".cnn-app:has(#lyr-{key}:checked) .tluty-{key}{{display:block}}")
-            dyn_css.append(f".tlutx-{key}{{background-image:url({lut_paths[f'tile_{key}_x_1x']});width:{tw}px;height:4px}}")
-            hidpi_css.append(f".tlutx-{key}{{background-image:url({lut_paths[f'tile_{key}_x_2x']})}}")
-            dyn_css.append(f".tluty-{key}{{background-image:url({lut_paths[f'tile_{key}_y_1x']});width:4px;height:{tw}px}}")
-            hidpi_css.append(f".tluty-{key}{{background-image:url({lut_paths[f'tile_{key}_y_2x']})}}")
-            tile_lut_divs.append(f'<div class="lut-box tlut-box tlutx-{key}" style="left:{tlx_x}px;top:{tlx_y}px"></div>')
-            tile_lut_divs.append(f'<div class="lut-box tlut-box tluty-{key}" style="left:{tly_x}px;top:{tly_y}px"></div>')
+            dyn_css.append(f".cnn-app:has(#lyr-{key}:checked) .tlut-{key}{{display:inline}}")
+            tile_luts_1x.append(
+                f'<image class="tlut tlut-{key}" href="{lut_paths[f"tile_{key}_x_1x"]}" x="{tlx_x}" y="{tlx_y}" width="{tw}" height="4" preserveAspectRatio="none"/>'
+                f'<image class="tlut tlut-{key}" href="{lut_paths[f"tile_{key}_y_1x"]}" x="{tly_x}" y="{tly_y}" width="4" height="{tw}" preserveAspectRatio="none"/>'
+            )
+            tile_luts_2x.append(
+                f'<image class="tlut tlut-{key}" href="{lut_paths[f"tile_{key}_x_2x"]}" x="{tlx_x}" y="{tlx_y}" width="{tw}" height="4" preserveAspectRatio="none"/>'
+                f'<image class="tlut tlut-{key}" href="{lut_paths[f"tile_{key}_y_2x"]}" x="{tly_x}" y="{tly_y}" width="4" height="{tw}" preserveAspectRatio="none"/>'
+            )
 
     dyn_css.append(f"@media (-webkit-min-device-pixel-ratio:1.5),(min-resolution:1.5dppx){{{''.join(hidpi_css)}}}")
 
@@ -258,8 +270,6 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
 .lyr-top{{display:flex;align-items:center;gap:.36rem;font-size:.75rem;font-weight:700;color:#e2e8f0}}
 .lyr-top input{{accent-color:#38bdf8;cursor:pointer}}
 .lyr-meta{{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.65rem;color:#64748b}}
-.lyr-lbl:has(input:checked){{border-color:#38bdf8;background:#0c2136;box-shadow:0 0 0 1px rgba(56,189,248,.3)}}
-.lyr-lbl:has(input:checked) .lyr-meta{{color:#7dd3fc}}
 
 .sub-bar{{
   margin-top:.6rem;display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:.55rem;
@@ -280,54 +290,44 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
   border-radius:12px;background:#070b14;border:1px solid #1e3a5f;
   box-shadow:0 0 32px rgba(14,165,233,.12);overflow:hidden
 }}
-.fstage{{position:absolute;inset:0;width:{STAGE_W}px;height:{STAGE_H}px}}
-.cnn-vis{{filter:url(#cnn-vis-conv1-1x)}}
+.fstage{{position:absolute;inset:0;width:{STAGE_W}px;height:{STAGE_H}px;display:block}}
+.fstage image{{image-rendering:pixelated;pointer-events:none}}
+.cnn-visa{{filter:url(#cnn-vis-conv1-1x)}}
+.cnn-visb{{filter:none}}
+.luts-2x,.tlut{{display:none}}
 @media (-webkit-min-device-pixel-ratio:1.5),(min-resolution:1.5dppx){{
-  .cnn-vis{{filter:url(#cnn-vis-conv1-2x)}}
+  .cnn-visa{{filter:url(#cnn-vis-conv1-2x)}}
+  .luts-1x{{display:none}}
+  .luts-2x{{display:inline}}
 }}
 
-/* SourceGraphic helper LUT & ramp elements (locked to 1x/2x via CSS @media) */
-.lut-box{{
-  position:absolute;pointer-events:none;user-select:none;
-  background-size:100% 100%;background-repeat:no-repeat;image-rendering:pixelated
-}}
-.tlut-box{{display:none}}
-.c6-slot{{width:6px;height:6px}}
-@media (-webkit-min-device-pixel-ratio:1.5),(min-resolution:1.5dppx){{
-  .c6-slot{{width:3px;height:3px}}
-}}
-.bar-ramp-src{{
-  position:absolute;left:{BAR_X}px;top:{BAR_Y0}px;width:{BAR_W}px;height:{bars_total_h}px;
-  background:linear-gradient(90deg,#fff 0%,#000 100%);pointer-events:none
-}}
-
-/* contenteditable="true" OCR Drop Target */
+/* Static-flow contenteditable="true" OCR Drop Target inside <foreignObject>
+   (no position:absolute / overflow:hidden / z-index / CSS filter — avoids WebKit Bug 23113!).
+   Starts at y=INPUT_SRC_Y (20px) so the 28x28 / 14x14 active <img> sits above the y=52..192 drop box,
+   guaranteeing every drop anywhere in the box appends at the end and hides all older images! */
 .ocr-drop{{
-  position:absolute;left:{INPUT_PREVIEW_X}px;top:{INPUT_PREVIEW_Y}px;
-  width:{INPUT_PREVIEW_SZ}px;height:{INPUT_PREVIEW_SZ}px;
-  overflow:hidden;outline:none;cursor:copy;z-index:2;
+  width:{INPUT_PREVIEW_SZ}px;height:{INPUT_PREVIEW_SZ + (INPUT_PREVIEW_Y - INPUT_SRC_Y)}px;
+  outline:none;cursor:copy;padding-left:5px;
   background:#000;color:#fff;
   font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,"Arial Rounded MT Bold",sans-serif;
-  font-weight:700;font-size:22px;line-height:28px;text-align:center
+  font-weight:700;font-size:22px;line-height:28px;text-align:left
 }}
 .ocr-drop::selection,.ocr-drop *::selection{{background:transparent!important;color:inherit!important}}
 .ocr-drop img{{
-  position:absolute;left:0;top:0;
-  width:28px;height:28px;object-fit:contain;display:block;
+  width:28px;height:28px;object-fit:contain;display:block;image-rendering:pixelated;
   background:transparent;border:0;margin:0;padding:0;pointer-events:none;user-select:none
 }}
-.ocr-drop:has(img:not(.starter-img)) img.starter-img{{display:none!important}}
-.ocr-drop img:not(.starter-img) ~ img:not(.starter-img){{display:none!important}}
-.ocr-drop:has(img){{font-size:0;line-height:0;color:transparent;caret-color:transparent}}
+.ocr-drop br,.ocr-drop meta{{display:none!important}}
+.ocr-drop > :not(:nth-last-child(1 of :not(br):not(meta))),
+.ocr-drop > * img:not(:last-of-type){{display:none!important}}
+.ocr-drop:has(img){{padding:0;font-size:0;line-height:0;color:transparent;caret-color:transparent}}
+.ocr-drop:empty{{background:transparent}}
+.cnn-s1:has(.ocr-drop:not(:empty)) .starter-svg{{display:none}}
 
 @media (-webkit-min-device-pixel-ratio:1.5),(min-resolution:1.5dppx){{
-  .ocr-drop{{font-size:11px;line-height:14px}}
+  .ocr-drop{{font-size:11px;line-height:14px;padding-left:2px}}
   .ocr-drop img{{width:14px;height:14px}}
 }}
-
-.cnn-app:has(#opt-invert:checked) .ocr-drop img{{filter:invert(1)}}
-.cnn-app:has(#opt-contrast:checked) .ocr-drop img{{filter:contrast(1.65)}}
-.cnn-app:has(#opt-invert:checked):has(#opt-contrast:checked) .ocr-drop img{{filter:invert(1) contrast(1.65)}}
 
 /* Vector HUD Overlay */
 .stage-hud{{position:absolute;inset:0;pointer-events:none;z-index:4}}
@@ -345,7 +345,7 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
   border:2px dashed #38bdf8;border-radius:6px;
   box-shadow:0 0 0 1px rgba(15,23,42,.85),0 0 16px rgba(56,189,248,.18)
 }}
-.cnn-vis:has(.ocr-drop:focus) ~ .stage-hud .drop-frame{{
+.fstage:has(.ocr-drop:focus) ~ .stage-hud .drop-frame{{
   border-style:solid;border-color:#4ade80;box-shadow:0 0 20px rgba(74,222,128,.35)
 }}
 .drop-caption{{
@@ -358,7 +358,7 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
   width:{INPUT_PREVIEW_SZ - 16}px;text-align:center;font-size:.7rem;color:#7dd3fc;
   background:rgba(9,13,22,.85);padding:.32rem;border-radius:6px;border:1px solid #1e3a5f
 }}
-.cnn-vis:has(.ocr-drop:empty) ~ .stage-hud .drop-empty-hint{{display:block}}
+.fstage:has(.ocr-drop:focus:empty) ~ .stage-hud .drop-empty-hint{{display:block}}
 
 .divider-v{{position:absolute;top:12px;bottom:12px;width:1px;background:#1e293b}}
 
@@ -484,7 +484,7 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
 </head>
 <body>
 <svg aria-hidden="true" width="0" height="0" style="position:absolute;width:0;height:0;overflow:hidden;pointer-events:none">
-<defs>{"".join(svg_filters)}</defs>
+<defs>{"".join(svg_defs)}</defs>
 </svg>
 
 <main class="cnn-app">
@@ -537,28 +537,41 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
 
     <div class="stage-scroll">
       <div class="stage-shell">
-        <div class="fstage cnn-vis">
-          <div class="fstage cnn-s6">
-            <div class="fstage cnn-s5">
-              <div class="fstage cnn-s4">
-                <div class="fstage cnn-s3">
-                  <div class="fstage cnn-s2">
-                    <div class="fstage cnn-s1">
-                      <div class="lut-box lut-inx" style="left:{IN_LUTX_POS[0]}px;top:{IN_LUTX_POS[1]}px;width:{INPUT_PREVIEW_SZ}px;height:4px"></div>
-                      <div class="lut-box lut-iny" style="left:{IN_LUTY_POS[0]}px;top:{IN_LUTY_POS[1]}px;width:4px;height:{INPUT_PREVIEW_SZ}px"></div>
-                      <div class="lut-box lut-c5x c6-slot" style="left:{C5_LUTX_POS[0]}px;top:{C5_LUTX_POS[1]}px"></div>
-                      <div class="lut-box lut-c5y c6-slot" style="left:{C5_LUTY_POS[0]}px;top:{C5_LUTY_POS[1]}px"></div>
-                      <div class="lut-box lut-am c6-slot" style="left:{ANCHOR_MASK_X}px;top:{ANCHOR_MASK_Y}px"></div>
-                      {"".join(tile_lut_divs)}
-                      <div class="bar-ramp-src"></div>
-                      <div class="ocr-drop" id="ocr-input" contenteditable="true" spellcheck="false" aria-label="Drag or paste a number image here"><img class="starter-img" src="{default_rel}" alt="Default MNIST digit 7"></div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
+        <svg class="fstage" width="{STAGE_W}" height="{STAGE_H}" viewBox="0 0 {STAGE_W} {STAGE_H}">
+          <g class="cnn-visb"><g class="cnn-visa"><g class="cnn-visbarsb"><g class="cnn-visbarsa">
+          <g class="cnn-s6c"><g class="cnn-s6b"><g class="cnn-s6a">
+          <g class="cnn-s5b"><g class="cnn-s5a">
+          <g class="cnn-s4b"><g class="cnn-s4a">
+          <g class="cnn-s3b"><g class="cnn-s3a">
+          <g class="cnn-s2"><g class="cnn-s1">
+            <rect x="0" y="0" width="{STAGE_W}" height="{STAGE_H}" fill="#000" fill-opacity="0"/>
+            <g class="luts-1x">
+              <image href="{lut_paths['in_x_1x']}" x="{IN_LUTX_POS[0]}" y="{IN_LUTX_POS[1]}" width="{INPUT_PREVIEW_SZ}" height="4" preserveAspectRatio="none"/>
+              <image href="{lut_paths['in_y_1x']}" x="{IN_LUTY_POS[0]}" y="{IN_LUTY_POS[1]}" width="4" height="{INPUT_PREVIEW_SZ}" preserveAspectRatio="none"/>
+              <image href="{lut_paths['c5_x_1x']}" x="{C5_LUTX_POS[0]}" y="{C5_LUTX_POS[1]}" width="6" height="6" preserveAspectRatio="none"/>
+              <image href="{lut_paths['c5_y_1x']}" x="{C5_LUTY_POS[0]}" y="{C5_LUTY_POS[1]}" width="6" height="6" preserveAspectRatio="none"/>
+              <image href="{lut_paths['anchor_1x']}" x="{ANCHOR_MASK_X}" y="{ANCHOR_MASK_Y}" width="6" height="6" preserveAspectRatio="none"/>
+              <image href="{lut_paths['bar_1x']}" x="{BAR_X}" y="292" width="{BAR_W}" height="4" preserveAspectRatio="none"/>
+              <image class="starter-svg" href="{default_rel}" x="{INPUT_PREVIEW_X}" y="{INPUT_SRC_Y}" width="28" height="28" preserveAspectRatio="none"/>
+              {"".join(tile_luts_1x)}
+            </g>
+            <g class="luts-2x">
+              <image href="{lut_paths['in_x_2x']}" x="{IN_LUTX_POS[0]}" y="{IN_LUTX_POS[1]}" width="{INPUT_PREVIEW_SZ}" height="4" preserveAspectRatio="none"/>
+              <image href="{lut_paths['in_y_2x']}" x="{IN_LUTY_POS[0]}" y="{IN_LUTY_POS[1]}" width="4" height="{INPUT_PREVIEW_SZ}" preserveAspectRatio="none"/>
+              <image href="{lut_paths['c5_x_2x']}" x="{C5_LUTX_POS[0]}" y="{C5_LUTX_POS[1]}" width="3" height="3" preserveAspectRatio="none"/>
+              <image href="{lut_paths['c5_y_2x']}" x="{C5_LUTY_POS[0]}" y="{C5_LUTY_POS[1]}" width="3" height="3" preserveAspectRatio="none"/>
+              <image href="{lut_paths['anchor_2x']}" x="{ANCHOR_MASK_X}" y="{ANCHOR_MASK_Y}" width="3" height="3" preserveAspectRatio="none"/>
+              <image href="{lut_paths['bar_2x']}" x="{BAR_X}" y="292" width="{BAR_W}" height="4" preserveAspectRatio="none"/>
+              <image class="starter-svg" href="{default_rel}" x="{INPUT_PREVIEW_X}" y="{INPUT_SRC_Y}" width="14" height="14" preserveAspectRatio="none"/>
+              {"".join(tile_luts_2x)}
+            </g>
+            <g class="cnn-pre">
+              <foreignObject x="{INPUT_PREVIEW_X}" y="{INPUT_SRC_Y}" width="{INPUT_PREVIEW_SZ}" height="{INPUT_PREVIEW_SZ + (INPUT_PREVIEW_Y - INPUT_SRC_Y)}">
+                <div class="ocr-drop" id="ocr-input" contenteditable="true" spellcheck="false" aria-label="Drag or paste a number image here"></div>
+              </foreignObject>
+            </g>
+          </g></g></g></g></g></g></g></g></g></g></g></g></g></g></g>
+        </svg>
 
         <div class="stage-hud" aria-hidden="true">
           <span class="hud-col-title" style="left:{INPUT_PREVIEW_X}px">1. OCR Input Box</span>

@@ -137,8 +137,6 @@ header.hero code{color:#e2e8f0;background:#1e293b;padding:.1rem .32rem;border-ra
 .pr-top{display:flex;align-items:center;gap:.4rem;font-size:.77rem;font-weight:700;color:#e2e8f0}
 .pr-top input{accent-color:#38bdf8;cursor:pointer}
 .pr-sub{font-size:.7rem;color:#64748b;line-height:1.35}
-.pr-lbl:has(input:checked){border-color:#38bdf8;background:#0c2136;box-shadow:0 0 0 1px rgba(56,189,248,.28)}
-.pr-lbl:has(input:checked) .pr-sub{color:#7dd3fc}
 
 .flip-pill{
   display:inline-flex;align-items:center;gap:.45rem;padding:.35rem .72rem;border-radius:8px;
@@ -205,7 +203,7 @@ header.hero code{color:#e2e8f0;background:#1e293b;padding:.1rem .32rem;border-ra
 
 .pc{
   font-style:normal;font-size:clamp(1.85rem,5.3vw,2.95rem);line-height:1;
-  font-variant-emoji:text;contain:style;transform:translateY(-1px)
+  font-variant-emoji:text;transform:translateY(-1px)
 }
 .pc::after{content:counter(p,chess-sym)}
 
@@ -351,6 +349,11 @@ header.hero code{color:#e2e8f0;background:#1e293b;padding:.1rem .32rem;border-ra
     std_vars = state_to_css_vars(parse_fen(START_FEN))
     init_decls = ";".join(f"{k}:{v}" for k, v in sorted(std_vars.items()))
     css.append(f".init{{{init_decls}}}")
+
+    pr_card_sels = ",".join(f".chess-app:has(#pr-{pid}:checked) label[for=pr-{pid}]" for pid, *_ in PRESETS)
+    pr_sub_sels = ",".join(f".chess-app:has(#pr-{pid}:checked) label[for=pr-{pid}] .pr-sub" for pid, *_ in PRESETS)
+    css.append(f"{pr_card_sels}{{border-color:#38bdf8;background:#0c2136;box-shadow:0 0 0 1px rgba(56,189,248,.28)}}")
+    css.append(f"{pr_sub_sels}{{color:#7dd3fc}}")
 
     for pid, _title, fen, _sub in PRESETS:
         if pid == "std":

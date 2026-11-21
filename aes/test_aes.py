@@ -212,6 +212,11 @@ class TestNoJSAES(unittest.TestCase):
         self.assertIsNotNone(style_match)
         assert style_match is not None
         css_text = style_match.group(1)
+        self.assertNotIn(
+            "contain:style",
+            css_text.replace(" ", ""),
+            "Safari/WebKit isolates ::after counters when contain:style is set on counter-reset elements",
+        )
         top_level_css = re.sub(r"@media[^{]+\{(?:[^{}]+\{[^{}]*\})*\}", "", css_text)
 
         seen_class_selectors: set[str] = set()

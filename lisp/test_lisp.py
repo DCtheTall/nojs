@@ -144,6 +144,9 @@ class TestNoJSLisp(unittest.TestCase):
             ("(/ 40320 120)", 336),
             ("(mod 29 5)", 4),
             ("(% 1071 462)", 147),
+            ("(mod -10 5)", 0),
+            ("(% -64 2)", 0),
+            ("(mod -19 5)", 1),
             ("(= 7 7)", 1),
             ("(= 7 8)", 0),
             ("(<= 5 5)", 1),
@@ -290,6 +293,9 @@ class TestNoJSLisp(unittest.TestCase):
         self.assertIsNotNone(style_match)
         assert style_match is not None
         css_text = style_match.group(1)
+        self.assertNotIn("contain:style", css_text, "Safari/WebKit counter-reset bug: avoid contain:style on counter readouts")
+        self.assertNotIn(":has(input:checked)", css_text, "Safari/WebKit :has() radio bug: use root-anchored ID selectors")
+        self.assertNotIn("mod(0 - var(", css_text, "Safari/WebKit mod(-k*B, B)==B bug: keep compactor mod() dividend positive")
         top_level_css = re.sub(r"@media[^{]+\{(?:[^{}]+\{[^{}]*\})*\}", "", css_text)
 
         var_re = re.compile(r"var\((--[a-zA-Z0-9_]+)\)")

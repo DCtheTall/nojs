@@ -475,12 +475,12 @@ def build_lisp_css_spec(num_ticks: int = NUM_VM_TICKS) -> LispCSSSpec:
         max_slot = MAX_TOKENS if s == 5 else SOURCE_LEN
         for p in range(max_slot):
             act_p = f"min(1,var(--{kd_src}{p}))"
-            mov_p = f"clamp(0,mod({p} - var(--{kd_src}{p}),{mod_m}),1)"
+            mov_p = f"clamp(0,mod({320 + p} - var(--{kd_src}{p}),{mod_m}),1)"
             stay = f"({act_p}*(1 - {mov_p}))"
             if p + d < SOURCE_LEN:
                 q = p + d
                 act_q = f"min(1,var(--{kd_src}{q}))"
-                mov_q = f"clamp(0,mod({q} - var(--{kd_src}{q}),{mod_m}),1)"
+                mov_q = f"clamp(0,mod({320 + q} - var(--{kd_src}{q}),{mod_m}),1)"
                 from_r = f"({act_q}*{mov_q})"
                 kd_next = f"({stay}*var(--{kd_src}{p}) + {from_r}*var(--{kd_src}{q}))"
                 v_next = f"{stay}*var(--{v_src}{p}) + {from_r}*var(--{v_src}{q})"
@@ -860,7 +860,7 @@ def build_lisp_css_spec(num_ticks: int = NUM_VM_TICKS) -> LispCSSSpec:
             f"{css_eq(op_v, OP_ADD)}*({lhs_v} + {rhs_v})",
             f"{css_eq(op_v, OP_SUB)}*({lhs_v} - {rhs_v})",
             f"{css_eq(op_v, OP_MUL)}*({lhs_v}*{rhs_v})",
-            f"{css_eq(op_v, OP_MOD)}*mod({lhs_v},{g_rhs})",
+            f"{css_eq(op_v, OP_MOD)}*mod(mod({lhs_v},{g_rhs}),{g_rhs})",
             f"{css_eq(op_v, OP_EQ)}*{css_eq_vars(lhs_v, rhs_v)}",
             f"{css_eq(op_v, OP_LT)}*{css_gt(rhs_v, lhs_v)}",
             f"{css_eq(op_v, OP_GT)}*{css_gt(lhs_v, rhs_v)}",

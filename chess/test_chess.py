@@ -433,6 +433,16 @@ class TestNoJSChess(unittest.TestCase):
             500,
             f"DOM nesting depth {auditor.max_depth} must stay safely below Chromium's 512 parser cap",
         )
+        self.assertNotIn(
+            "contain:style",
+            raw.replace(" ", ""),
+            "Safari/WebKit isolates ::after counters when contain:style is set on counter-reset elements",
+        )
+        self.assertNotIn(
+            ":has(input:checked)",
+            raw,
+            "Subject-level :has(input:checked) fails to invalidate on radio uncheck in WebKit",
+        )
 
 
 if __name__ == "__main__":

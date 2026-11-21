@@ -36,6 +36,7 @@ from svg_cnn import (
     LAYER_VIEWS,
     WEIGHTS_DEFAULT_PATH,
     compile_compute_stages,
+    compile_pre_filters,
     compile_visual_stage,
     load_weights,
     q8,
@@ -57,6 +58,7 @@ class _DOMAuditor(HTMLParser):
         self.js_uris: List[str] = []
         self.data_uris: List[str] = []
         self.img_srcs: List[str] = []
+        self.svg_image_hrefs: List[str] = []
         self.has_contenteditable_true = False
 
     def handle_starttag(self, tag: str, attrs: List[Tuple[str, str | None]]) -> None:
@@ -67,6 +69,8 @@ class _DOMAuditor(HTMLParser):
             self.has_contenteditable_true = True
         if t == "img" and "src" in attr_map:
             self.img_srcs.append(attr_map["src"])
+        if t == "image" and "href" in attr_map:
+            self.svg_image_hrefs.append(attr_map["href"])
 
         for k, v in attrs:
             kl = k.lower()
@@ -174,6 +178,7 @@ class TestNoJSCNN(unittest.TestCase):
             # R == G == B guarantees exact neutral D65 gray (zero sRGB->Display-P3 matrix cross-talk!)
             np.testing.assert_array_equal(arr[..., 0], arr[..., 1], err_msg=f"R != G in {fn}")
             np.testing.assert_array_equal(arr[..., 1], arr[..., 2], err_msg=f"G != B in {fn}")
+            self.assertTrue(np.all(arr[..., 0] >= 128), f"Dark LUT byte <128 in {fn} quantizes in WebKit Display-P3/CoreImage")
             self.assertTrue(np.all(arr[..., 3] == 255), f"Alpha != 255 in {fn}")
 
     def test_static_html_zero_js_and_svg_dag_audit(self) -> None:
@@ -185,41 +190,59 @@ class TestNoJSCNN(unittest.TestCase):
         self.assertEqual(auditor.js_uris, [], f"Forbidden javascript: URIs: {auditor.js_uris}")
         self.assertEqual(auditor.data_uris, [], "Expected external relative assets, found inline data: URIs")
         self.assertTrue(auditor.has_contenteditable_true, 'Missing contenteditable="true" OCR input element')
-        self.assertGreaterEqual(len(auditor.img_srcs), 21)
-        for src in auditor.img_srcs:
+        self.assertGreaterEqual(len(auditor.img_srcs), 20)
+        self.assertGreaterEqual(len(auditor.svg_image_hrefs), 32)
+        for src in auditor.img_srcs + auditor.svg_image_hrefs:
             self.assertTrue(src.startswith("assets/"), f"Expected relative assets/ path, got {src}")
             self.assertTrue(os.path.exists(os.path.join(CNN_DIR, src)), f"Missing referenced image {src}")
 
-        # Audit all 24 compiled SVG <filter> stages
+        self.assertNotIn(":has(input:checked)", self.html_doc, "Safari/WebKit :has() radio bug: use root-anchored ID selectors")
+        self.assertIn("<foreignObject", self.html_doc, "Expected SVG <foreignObject> stage for Safari/WebKit filter chain")
+
+        # Audit all compiled SVG <filter> stages (Safari/WebKit <= 80 prims/filter + Blink O(N) DAG guards)
+        all_filters: List[str] = list(compile_pre_filters())
         for dpr in (1, 2):
-            filters = compile_compute_stages(self.spec, dpr) + [compile_visual_stage(k, dpr) for k, *_ in LAYER_VIEWS]
-            for fx in filters:
-                root = ET.fromstring(fx)
-                fid = root.attrib["id"]
-                self.assertEqual(root.attrib.get("color-interpolation-filters"), "sRGB")
-                defined = {"SourceGraphic", "SourceAlpha"}
-                paths = {"SourceGraphic": 1, "SourceAlpha": 1}
-                for el in root:
-                    self.assertNotEqual(el.tag, "feImage", f"Forbidden <feImage> in {fid}")
-                    if el.tag == "feConvolveMatrix":
-                        ox, oy = [int(v) for v in el.attrib["order"].split()]
-                        self.assertLessEqual(ox * oy, 25, f"Kernel {ox}x{oy} exceeds 25-tap GPU budget in {fid}")
-                    cnt = 0
-                    for a in ("in", "in2"):
-                        ref = el.attrib.get(a)
-                        if ref:
-                            self.assertIn(ref, defined, f"Undefined input wire {ref} in {fid}")
-                            cnt += paths[ref]
-                    if el.tag == "feMerge":
-                        for mn in el:
-                            ref = mn.attrib["in"]
-                            self.assertIn(ref, defined, f"Undefined feMergeNode {ref} in {fid}")
-                            cnt += paths[ref]
-                    cnt = max(cnt, 1)
-                    if "result" in el.attrib:
-                        defined.add(el.attrib["result"])
-                        paths[el.attrib["result"]] = cnt
-                    self.assertLess(cnt, 1000, f"Excessive DAG path fan-in ({cnt}) in {fid}")
+            all_filters.extend(compile_compute_stages(self.spec, dpr))
+            for k, *_ in LAYER_VIEWS:
+                all_filters.extend(compile_visual_stage(k, dpr))
+
+        for fx in all_filters:
+            root = ET.fromstring(fx)
+            fid = root.attrib["id"]
+            self.assertEqual(root.attrib.get("color-interpolation-filters"), "sRGB")
+            self.assertEqual(root.attrib.get("filterUnits"), "userSpaceOnUse", f"{fid} must use userSpaceOnUse")
+            self.assertEqual(root.attrib.get("primitiveUnits"), "userSpaceOnUse", f"{fid} must use userSpaceOnUse")
+            top_prims = list(root)
+            total_fe_tags = sum(1 for el in root.iter() if el is not root)
+            self.assertLessEqual(len(top_prims), 80, f"{fid} has {len(top_prims)} top-level prims (risks WebKit CoreImage hang)")
+            self.assertLessEqual(total_fe_tags, 100, f"{fid} has {total_fe_tags} <fe*> tags (WebKit aborts >200)")
+
+            defined = {"SourceGraphic", "SourceAlpha"}
+            paths = {"SourceGraphic": 1, "SourceAlpha": 1}
+            for el in top_prims:
+                self.assertNotEqual(el.tag, "feImage", f"Forbidden <feImage> in {fid}")
+                if el.tag == "feConvolveMatrix":
+                    ox, oy = [int(v) for v in el.attrib["order"].split()]
+                    self.assertLessEqual(ox * oy, 25, f"Kernel {ox}x{oy} exceeds 25-tap GPU budget in {fid}")
+                if el.tag == "feMorphology":
+                    radii = [float(v) for v in el.attrib["radius"].split()]
+                    self.assertTrue(all(r > 0 for r in radii), f"Zero feMorphology radius in {fid} fails in WebKit: {radii}")
+                cnt = 0
+                for a in ("in", "in2"):
+                    ref = el.attrib.get(a)
+                    if ref:
+                        self.assertIn(ref, defined, f"Undefined input wire {ref} in {fid}")
+                        cnt += paths[ref]
+                if el.tag == "feMerge":
+                    for mn in el:
+                        ref = mn.attrib["in"]
+                        self.assertIn(ref, defined, f"Undefined feMergeNode {ref} in {fid}")
+                        cnt += paths[ref]
+                cnt = max(cnt, 1)
+                if "result" in el.attrib:
+                    defined.add(el.attrib["result"])
+                    paths[el.attrib["result"]] = cnt
+                self.assertLess(cnt, 1000, f"Excessive DAG path fan-in ({cnt}) in {fid}")
 
     def test_colab_notebook_valid(self) -> None:
         nb_path = os.path.join(CNN_DIR, "train_mnist_cnn.ipynb")

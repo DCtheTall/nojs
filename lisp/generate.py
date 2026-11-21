@@ -104,7 +104,12 @@ def generate_html(
     ]
     css.append(f"@counter-style chr-src{{system:fixed 0;symbols:{' '.join(char_prev_list)}}}")
 
-    for prop in spec.registered_props:
+    extra_ui_props = (
+        [f"--ucm{i}" for i in range(TOKEN_COMPOSER_LEN - 1)]
+        + [f"--dsemi{i}" for i in range(TOKEN_COMPOSER_LEN - 1)]
+        + [f"--dsemig{g}" for g in range((TOKEN_COMPOSER_LEN - 1 + 7) // 8)]
+    )
+    for prop in list(spec.registered_props) + extra_ui_props:
         css.append(f'@property {prop}{{syntax:"<integer>";initial-value:0;inherits:true}}')
 
     # -----------------------------------------------------------------------
@@ -163,8 +168,6 @@ header.hero code{color:#e2e8f0;background:#1e293b;padding:.1rem .32rem;border-ra
   font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.68rem;color:#64748b;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis
 }
-.pr-lbl:has(input:checked){border-color:#38bdf8;background:#0c2136;box-shadow:0 0 0 1px rgba(56,189,248,.28)}
-.pr-lbl:has(input:checked) .pr-code{color:#7dd3fc}
 
 .kbd-bar{
   display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:.65rem;
@@ -211,8 +214,7 @@ header.hero code{color:#e2e8f0;background:#1e293b;padding:.1rem .32rem;border-ra
 }
 @media (max-width:720px){.char-grid{grid-template-columns:repeat(8,minmax(0,1fr))}}
 .cw{display:flex;flex-direction:column;align-items:center;gap:2px;transition:opacity .12s}
-.tok-editor-grid .cw:has(:checked[cm]) ~ .cw,.char-grid .cw:has(:checked[cm]) ~ .cw{opacity:.24}
-.lisp-app:has(#pr-tok:checked) .tok-editor-grid .cw:has(:checked[def]) ~ .cw{opacity:.24}
+.char-grid .cw:has(:checked[cm]) ~ .cw{opacity:.24}
 .ci{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.58rem;color:#475569}
 .tsw{position:relative;width:100%}
 select.cc{
@@ -233,7 +235,7 @@ select.cc:focus{outline:none;border-color:#38bdf8;background:#0c2438;box-shadow:
   pointer-events:none;color:#f8fafc;
   font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.85rem;font-weight:600
 }
-.ptok i{font-style:normal;contain:style}
+.ptok i{font-style:normal}
 .ptok i::after{content:counter(ptv,tok-lbl)}
 .tsw:has(:checked:not([def])) .ptok{display:none}
 
@@ -260,7 +262,7 @@ select.cc:focus{outline:none;border-color:#38bdf8;background:#0c2438;box-shadow:
 .src-chr-view{display:none}
 .lisp-app:has(#pr-edit:checked) .src-tok-view{display:none}
 .lisp-app:has(#pr-edit:checked) .src-chr-view{display:inline}
-.src-tok-view i,.src-chr-view i{font-style:normal;contain:style}
+.src-tok-view i,.src-chr-view i{font-style:normal}
 .src-tok-view i::after{content:counter(tpv,tok-src)}
 .src-chr-view i::after{content:counter(cpv,chr-src)}
 
@@ -275,7 +277,7 @@ select.cc:focus{outline:none;border-color:#38bdf8;background:#0c2438;box-shadow:
   font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:1.85rem;font-weight:800;
   color:#4ade80;letter-spacing:-.01em;line-height:1.2
 }
-.res-val i,.stat-num i,.tk-k,.tk-v,.tk-n,.ev-k,.ev-v,.tr-c{font-style:normal;contain:style}
+.res-val i,.stat-num i,.tk-k,.tk-v,.tk-n,.ev-k,.ev-v,.tr-c{font-style:normal}
 .res-val i::after{content:counter(ans)}
 .stat-num{
   font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:1.3rem;font-weight:700;color:#38bdf8
@@ -356,14 +358,23 @@ select.cc:focus{outline:none;border-color:#38bdf8;background:#0c2438;box-shadow:
     root_decls = ["--use_tok:1"]
     root_decls.extend(f"--ptid{i}:1" for i in range(TOKEN_COMPOSER_LEN))
     root_decls.extend(f"--ovr{i}:0" for i in range(TOKEN_COMPOSER_LEN))
+    root_decls.extend(f"--ucm{i}:0" for i in range(TOKEN_COMPOSER_LEN - 1))
     root_decls.extend(f"--tb{i}_{b}:0" for i in range(TOKEN_COMPOSER_LEN) for b in range(8))
     root_decls.extend(f"--b{i}_{b}:0" for i in range(SOURCE_LEN) for b in range(6))
     css.append(f":root{{{';'.join(root_decls)}}}")
 
     css.append(".lisp-app:has(#pr-edit:checked){--use_tok:0}")
 
+    all_preset_ids = ["tok", "edit"] + [pid for pid, *_ in PRESETS]
+    pr_active_lbl = ",".join(f".lisp-app:has(#pr-{pid}:checked) label[for=pr-{pid}]" for pid in all_preset_ids)
+    pr_active_code = ",".join(f".lisp-app:has(#pr-{pid}:checked) label[for=pr-{pid}] .pr-code" for pid in all_preset_ids)
+    css.append(f"{pr_active_lbl}{{border-color:#38bdf8;background:#0c2136;box-shadow:0 0 0 1px rgba(56,189,248,.28)}}")
+    css.append(f"{pr_active_code}{{color:#7dd3fc}}")
+
     for slot in range(TOKEN_COMPOSER_LEN):
         css.append(f".lisp-app:has(#t{slot} :checked:not([def])){{--ovr{slot}:1}}")
+        if slot < TOKEN_COMPOSER_LEN - 1:
+            css.append(f".lisp-app:has(#t{slot} :checked[cm]){{--ucm{slot}:1}}")
         css.append(f".ptok{slot}{{counter-reset:ptv var(--ptid{slot})}}")
         for bit_idx, bchar in enumerate(BIT8_LETTERS):
             css.append(f".lisp-app:has(#t{slot} :checked[b*={bchar}]){{--tb{slot}_{bit_idx}:1}}")
@@ -372,17 +383,27 @@ select.cc:focus{outline:none;border-color:#38bdf8;background:#0c2438;box-shadow:
         for bit_idx, bchar in enumerate(BIT6_LETTERS):
             css.append(f".lisp-app:has(#c{slot} :checked[b*={bchar}]){{--b{slot}_{bit_idx}:1}}")
 
-    preset_dim_selectors: List[str] = []
     for pid, _title, src, _exp_val in PRESETS:
         ptids = tokenize_to_palette_ids(src, TOKEN_COMPOSER_LEN)
         p_decls = [f"--ptid{slot}:{ptid}" for slot, ptid in enumerate(ptids)]
         css.append(f".lisp-app:has(#pr-{pid}:checked){{{';'.join(p_decls)}}}")
         css.append(f".lisp-app:has(#pr-{pid}:checked) #bn-{pid}{{display:block}}")
-        ntok_p = sum(1 for ptid in ptids if ptid != 1)
-        for k in range(ntok_p, TOKEN_COMPOSER_LEN - 1):
-            preset_dim_selectors.append(f".lisp-app:has(#pr-{pid}:checked) #tw{k}:has(:checked[def]) ~ .cw")
-    if preset_dim_selectors:
-        css.append(f"{','.join(preset_dim_selectors)}{{opacity:.24}}")
+
+    # Deterministic custom-property comment-tail dimming for #tw1..39 (avoids WebKit multi-:has() ~ sibling bug)
+    dsemi_decls = [
+        f"--dsemi{i}:calc((1 - var(--ovr{i}))*(1 - min(1,max(var(--ptid{i}) - 1,1 - var(--ptid{i})))) + var(--ucm{i}))"
+        for i in range(TOKEN_COMPOSER_LEN - 1)
+    ]
+    css.append(f".lisp-app .tok-editor-wrap{{{';'.join(dsemi_decls)}}}")
+    dsemig_decls = []
+    for g in range((TOKEN_COMPOSER_LEN - 1 + 7) // 8):
+        hi = min(8 * g + 8, TOKEN_COMPOSER_LEN - 1)
+        dsemig_decls.append(f"--dsemig{g}:calc({' + '.join(f'var(--dsemi{j})' for j in range(8 * g, hi))})")
+    css.append(f".lisp-app .tok-editor-grid{{{';'.join(dsemig_decls)}}}")
+    for slot in range(1, TOKEN_COMPOSER_LEN):
+        g, r = divmod(slot, 8)
+        dim_terms = [f"var(--dsemig{bg})" for bg in range(g)] + [f"var(--dsemi{8 * g + br})" for br in range(r)]
+        css.append(f"#tw{slot}{{opacity:calc(1 - .76*min(1,{' + '.join(dim_terms)}))}}")
 
     # -----------------------------------------------------------------------
     # D. Compiled Lexer, Compactor, Parser, & Reusable 5-Stage VM CSS Rules
