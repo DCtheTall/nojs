@@ -2,13 +2,14 @@
 """
 Standalone Pure HTML5 + CSS + Inline SVG Generator for MNIST CNN OCR (`cnn/index.html`).
 
-Generates a fast, compact (~415 KB), zero-JavaScript HTML5 application executing our trained
-1,771-parameter Convolutional Neural Network (`weights.json`) across 7 nested `<div>` SVG
-`<filter>` stages (`s1..s6` compute stages + `vis` layer inspector & Softmax bar stage):
-  - O(N) linear texture caching between stages (eliminates Blink/Skia exponential DAG blowup)
-  - External PNG assets in `cnn/assets/` loaded via relative `<img>` and CSS `url(assets/...)`
+Generates a fast, zero-JavaScript HTML5 application executing our trained 3,004-parameter
+BatchNorm-free Convolutional Neural Network (`weights.json`, 98.65% exact 8-bit SVG MNIST test
+accuracy, 99.1% printed/typed font OCR accuracy) across nested `<svg><g>` filter stages:
+  - O(N) linear texture caching between `<g>` stages (`<= 76` primitives/filter for Safari/WebKit & Chrome/Skia)
+  - Stage 1 Alpha-neutral multi-edge polarity detection + automatic 8-bit SVG Auto-Levels
+  - External PNG assets in `cnn/assets/` loaded via relative `<img>` and `<image href="assets/...">`
   - Zero `<feImage>` tags inside `<filter>` and every `<feConvolveMatrix>` `<= 5x5` (GPU fast path)
-  - `contenteditable="true"` drag-and-drop / paste / type OCR input slot
+  - WebKit-safe `<foreignObject>` `contenteditable="true"` drag-and-drop / paste / type OCR input slot
   - Radio selector to inspect intermediate convolutional layer activations as RGB color images
 """
 
@@ -50,9 +51,9 @@ from svg_cnn import (
     INPUT_PREVIEW_Y,
     INPUT_SRC_Y,
     LAYER_VIEWS,
-    SPLIT_VISUAL_LAYERS,
     STAGE_H,
     STAGE_W,
+    THREE_ROW_VISUAL_LAYERS,
     TILE_LUTX_POS,
     TILE_LUTY_POS,
     WEIGHTS_DEFAULT_PATH,
@@ -66,12 +67,12 @@ from svg_cnn import (
 
 
 LAYER_DESCRIPTIONS: Dict[str, str] = {
-    "conv1":   "Stage 1 · 12 learned 5×5 feConvolveMatrix spatial filters packed into 4 RGB color images (24×24).",
-    "mix2":    "Stage 2a · 2×2 feConvolveMatrix AvgPool + signed 1×1 feColorMatrix mixing (12→15 ch = 5 RGB maps, 12×12).",
-    "dwconv2": "Stage 2b · 15 depthwise dilated 3×3 feConvolveMatrix filters capturing curves & corners (5 RGB maps, 10×10).",
-    "mix3":    "Stage 3a · 2×2 AvgPool + signed 1×1 feColorMatrix mixing (15→24 ch = 8 RGB color images, 5×5 part detectors).",
-    "dwconv3": "Stage 3b · 24 depthwise 3×3 feConvolveMatrix filters on compacted 5×5 grid (8 RGB color maps, 3×3).",
-    "dwconv4": "Stage 4 · 24 global 3×3 feConvolveMatrix aggregators collapsing 3×3 → 1×1 bottleneck code (8 RGB color swatches).",
+    "conv1":   "Stage 1 · 15 learned 5×5 feConvolveMatrix spatial filters packed into 5 RGB color images (24×24).",
+    "mix2":    "Stage 2a · 2×2 feConvolveMatrix AvgPool + signed 1×1 feColorMatrix mixing (15→24 ch = 8 RGB maps, 12×12).",
+    "dwconv2": "Stage 2b · 24 depthwise dilated 3×3 feConvolveMatrix filters capturing curves & corners (8 RGB maps, 10×10).",
+    "mix3":    "Stage 3a · 2×2 AvgPool + signed 1×1 feColorMatrix mixing (24→36 ch = 12 RGB color images, 5×5 part detectors).",
+    "dwconv3": "Stage 3b · 36 depthwise 3×3 feConvolveMatrix filters on compacted 5×5 grid (12 RGB color maps, 3×3).",
+    "dwconv4": "Stage 4 · 36 global 3×3 feConvolveMatrix aggregators collapsing 3×3 → 1×1 bottleneck code (12 RGB color swatches).",
 }
 
 PAPER_PALETTES: List[Tuple[Tuple[int, int, int], Tuple[int, int, int], str]] = [
@@ -115,7 +116,6 @@ def write_sample_digit_assets(spec: dict) -> Tuple[str, List[Tuple[int, str, int
     rng = np.random.default_rng(2026)
 
     for d in range(10):
-        # Sort unseen test samples for digit d by confidence so MNIST card uses crispest test digit
         candidates = sorted(by_digit[d], key=lambda g: float(g["svg_probs"][d]), reverse=True)
         gs0 = candidates[0]
         u8_0 = np.array(gs0["pixels_u8"], dtype=np.uint8)
@@ -126,7 +126,6 @@ def write_sample_digit_assets(spec: dict) -> Tuple[str, List[Tuple[int, str, int
         if d == 7:
             default_rel = rel0
 
-        # Distinct unseen test digit rendered as colored ink on light paper
         bg_rgb, ink_rgb, style_lbl = PAPER_PALETTES[d]
         noise = rng.normal(0.0, 3.5, size=(28, 28, 1))
         chosen_paper = None
@@ -188,20 +187,20 @@ def generate_html(weights_path: str = WEIGHTS_DEFAULT_PATH) -> str:
     tlx_x, tlx_y = TILE_LUTX_POS
     tly_x, tly_y = TILE_LUTY_POS
 
-    for key, _, _, _, coords, _, _, (_, _, cell_zoom, _) in LAYER_VIEWS:
+    for key, _, _, _, coords, _, _, (_, _, cell_zoom, _, _) in LAYER_VIEWS:
         for dpr in (1, 2):
             svg_defs.extend(compile_visual_stage(key, dpr))
 
-        if key in SPLIT_VISUAL_LAYERS:
-            dyn_css.append(f".cnn-app:has(#lyr-{key}:checked) .cnn-visa{{filter:url(#cnn-visa-{key}-1x)}}")
-            dyn_css.append(f".cnn-app:has(#lyr-{key}:checked) .cnn-visb{{filter:url(#cnn-visb-{key}-1x)}}")
-            hidpi_css.append(f".cnn-app:has(#lyr-{key}:checked) .cnn-visa{{filter:url(#cnn-visa-{key}-2x)}}")
-            hidpi_css.append(f".cnn-app:has(#lyr-{key}:checked) .cnn-visb{{filter:url(#cnn-visb-{key}-2x)}}")
+        dyn_css.append(f".cnn-app:has(#lyr-{key}:checked) .cnn-visa{{filter:url(#cnn-visa-{key}-1x)}}")
+        dyn_css.append(f".cnn-app:has(#lyr-{key}:checked) .cnn-visb{{filter:url(#cnn-visb-{key}-1x)}}")
+        hidpi_css.append(f".cnn-app:has(#lyr-{key}:checked) .cnn-visa{{filter:url(#cnn-visa-{key}-2x)}}")
+        hidpi_css.append(f".cnn-app:has(#lyr-{key}:checked) .cnn-visb{{filter:url(#cnn-visb-{key}-2x)}}")
+        if key in THREE_ROW_VISUAL_LAYERS:
+            dyn_css.append(f".cnn-app:has(#lyr-{key}:checked) .cnn-visc{{filter:url(#cnn-visc-{key}-1x)}}")
+            hidpi_css.append(f".cnn-app:has(#lyr-{key}:checked) .cnn-visc{{filter:url(#cnn-visc-{key}-2x)}}")
         else:
-            dyn_css.append(f".cnn-app:has(#lyr-{key}:checked) .cnn-visa{{filter:url(#cnn-vis-{key}-1x)}}")
-            dyn_css.append(f".cnn-app:has(#lyr-{key}:checked) .cnn-visb{{filter:none}}")
-            hidpi_css.append(f".cnn-app:has(#lyr-{key}:checked) .cnn-visa{{filter:url(#cnn-vis-{key}-2x)}}")
-            hidpi_css.append(f".cnn-app:has(#lyr-{key}:checked) .cnn-visb{{filter:none}}")
+            dyn_css.append(f".cnn-app:has(#lyr-{key}:checked) .cnn-visc{{filter:none}}")
+            hidpi_css.append(f".cnn-app:has(#lyr-{key}:checked) .cnn-visc{{filter:none}}")
 
         dyn_css.append(f".cnn-app:has(#lyr-{key}:checked) .ldesc-{key}{{display:block}}")
         dyn_css.append(f".cnn-app:has(#lyr-{key}:checked) .tgrid-{key}{{display:block}}")
@@ -292,11 +291,14 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
 }}
 .fstage{{position:absolute;inset:0;width:{STAGE_W}px;height:{STAGE_H}px;display:block}}
 .fstage image{{image-rendering:pixelated;pointer-events:none}}
-.cnn-visa{{filter:url(#cnn-vis-conv1-1x)}}
-.cnn-visb{{filter:none}}
+.cnn-visa{{filter:url(#cnn-visa-conv1-1x)}}
+.cnn-visb{{filter:url(#cnn-visb-conv1-1x)}}
+.cnn-visc{{filter:none}}
 .luts-2x,.tlut{{display:none}}
 @media (-webkit-min-device-pixel-ratio:1.5),(min-resolution:1.5dppx){{
-  .cnn-visa{{filter:url(#cnn-vis-conv1-2x)}}
+  .cnn-visa{{filter:url(#cnn-visa-conv1-2x)}}
+  .cnn-visb{{filter:url(#cnn-visb-conv1-2x)}}
+  .cnn-visc{{filter:none}}
   .luts-1x{{display:none}}
   .luts-2x{{display:inline}}
 }}
@@ -307,10 +309,11 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
    guaranteeing every drop anywhere in the box appends at the end and hides all older images! */
 .ocr-drop{{
   width:{INPUT_PREVIEW_SZ}px;height:{INPUT_PREVIEW_SZ + (INPUT_PREVIEW_Y - INPUT_SRC_Y)}px;
-  outline:none;cursor:copy;padding-left:5px;
-  background:#000;color:#fff;
+  outline:none;cursor:copy;padding-left:7px;
+  background:#000;color:#fff;caret-color:transparent;
   font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,"Arial Rounded MT Bold",sans-serif;
-  font-weight:700;font-size:22px;line-height:28px;text-align:left
+  font-variant-numeric:tabular-nums;
+  font-weight:700;font-size:21px;line-height:28px;text-align:left
 }}
 .ocr-drop::selection,.ocr-drop *::selection{{background:transparent!important;color:inherit!important}}
 .ocr-drop img{{
@@ -320,12 +323,12 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
 .ocr-drop br,.ocr-drop meta{{display:none!important}}
 .ocr-drop > :not(:nth-last-child(1 of :not(br):not(meta))),
 .ocr-drop > * img:not(:last-of-type){{display:none!important}}
-.ocr-drop:has(img){{padding:0;font-size:0;line-height:0;color:transparent;caret-color:transparent}}
+.ocr-drop:has(img){{background:transparent;padding:0;font-size:0;line-height:0;color:transparent;caret-color:transparent}}
 .ocr-drop:empty{{background:transparent}}
 .cnn-s1:has(.ocr-drop:not(:empty)) .starter-svg{{display:none}}
 
 @media (-webkit-min-device-pixel-ratio:1.5),(min-resolution:1.5dppx){{
-  .ocr-drop{{font-size:11px;line-height:14px;padding-left:2px}}
+  .ocr-drop{{font-size:10.5px;line-height:14px;padding-left:3.5px}}
   .ocr-drop img{{width:14px;height:14px}}
 }}
 
@@ -376,7 +379,7 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
 .tgrid{{display:none;position:absolute;inset:0}}
 .tlbl{{
   position:absolute;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
-  font-size:.56rem;color:#64748b;text-align:center;letter-spacing:-.02em
+  font-size:.55rem;color:#64748b;text-align:center;letter-spacing:-.02em
 }}
 
 .d-row-lbl{{
@@ -413,7 +416,7 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
     css_all = minify_css(ui_css) + "".join(dyn_css)
 
     radio_items, desc_items, tile_overlays = [], [], []
-    for idx, (key, title, badge_shape, _, coords, _, n_rgb, (cols, rows, cell_zoom, gap)) in enumerate(LAYER_VIEWS):
+    for idx, (key, title, badge_shape, _, coords, _, n_rgb, (cols, rows, cell_zoom, gap_x, gap_y)) in enumerate(LAYER_VIEWS):
         checked_attr = " checked" if idx == 0 else ""
         radio_items.append(
             f'<label class="lyr-lbl" for="lyr-{key}">'
@@ -425,17 +428,17 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
 
         tile_w = len(coords) * cell_zoom
         tile_h = len(coords) * cell_zoom
-        grid_w = cols * tile_w + (cols - 1) * gap
-        grid_h = rows * tile_h + (rows - 1) * gap
+        grid_w = cols * tile_w + (cols - 1) * gap_x
+        grid_h = rows * tile_h + (rows - 1) * gap_y
         sx = ACT_PANEL_X + (ACT_PANEL_W - grid_w) // 2
         sy = ACT_PANEL_Y + (ACT_PANEL_H - grid_h) // 2
 
         tlbls = []
         for g in range(n_rgb):
             col, row = g % cols, g // cols
-            tx = sx + col * (tile_w + gap)
-            ty = sy + row * (tile_h + gap)
-            ly = (ty - 12) if row == 0 else (ty + tile_h + 2)
+            tx = sx + col * (tile_w + gap_x)
+            ty = sy + row * (tile_h + gap_y)
+            ly = ty - 11
             tlbls.append(
                 f'<span class="tlbl" style="left:{tx - 3}px;top:{ly}px;width:{tile_w + 6}px">'
                 f'ch {3*g}–{3*g+2}'
@@ -470,9 +473,13 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
         for d, style, rel, pct in paper_cards
     )
 
-    svg_acc = metrics.get("test_accuracy_svg_uint8", 0.9586) * 100.0
-    qat_acc = metrics.get("test_accuracy_qat", 0.9786) * 100.0
-    n_params = metrics.get("total_parameters", 1771)
+    svg_acc = metrics.get("test_accuracy_svg_uint8", 0.9865) * 100.0
+    font_acc = metrics.get("font_ocr_accuracy_svg_uint8", 0.991) * 100.0
+    n_params = metrics.get("total_parameters", 3004)
+
+    stage_chain = ("visc", "visb", "visa") + tuple(reversed(COMPUTE_STAGE_IDS))
+    open_gs = "".join(f'<g class="cnn-{sid}">' for sid in stage_chain)
+    close_gs = "</g>" * len(stage_chain)
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -496,15 +503,16 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
       <span class="badge green">Zero JavaScript</span>
       <span class="badge">SVG feConvolveMatrix</span>
       <span class="badge purple">contenteditable=&quot;true&quot; OCR</span>
-      <span class="badge amber">{svg_acc:.1f}% Exact 8-Bit SVG Test Acc ({qat_acc:.1f}% QAT)</span>
+      <span class="badge amber">{svg_acc:.2f}% Exact 8-Bit SVG Test Acc ({font_acc:.1f}% Font OCR)</span>
       <span class="badge">{n_params:,} Params · 0 BatchNorm</span>
     </div>
     <h1>Convolutional Neural Network OCR in Pure HTML5 SVG &amp; CSS</h1>
     <p>
-      Drag any number image (from the sample trays below or another tab) or paste an image into the
-      <code>contenteditable=&quot;true&quot;</code> input box. Seven nested SVG <code>&lt;filter&gt;</code> stages
-      grayscale &amp; polarity-normalize the image, run 4 stages of <code>&lt;feConvolveMatrix&gt;</code>
-      and <code>&lt;feColorMatrix&gt;</code> layers, and render RGB layer activations alongside Softmax probabilities.
+      Drag any number image (from the sample trays below or another tab), paste a screenshot, or type <code>0–9</code>
+      into the <code>contenteditable=&quot;true&quot;</code> input box. Linearly cached SVG <code>&lt;filter&gt;</code>
+      stages auto-grayscale, polarity-normalize &amp; contrast-stretch the input, run 4 stages of
+      <code>&lt;feConvolveMatrix&gt;</code> and <code>&lt;feColorMatrix&gt;</code> layers, and render RGB layer
+      activations alongside Softmax probabilities.
     </p>
   </header>
 
@@ -538,12 +546,7 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
     <div class="stage-scroll">
       <div class="stage-shell">
         <svg class="fstage" width="{STAGE_W}" height="{STAGE_H}" viewBox="0 0 {STAGE_W} {STAGE_H}">
-          <g class="cnn-visb"><g class="cnn-visa"><g class="cnn-visbarsb"><g class="cnn-visbarsa">
-          <g class="cnn-s6c"><g class="cnn-s6b"><g class="cnn-s6a">
-          <g class="cnn-s5b"><g class="cnn-s5a">
-          <g class="cnn-s4b"><g class="cnn-s4a">
-          <g class="cnn-s3b"><g class="cnn-s3a">
-          <g class="cnn-s2"><g class="cnn-s1">
+          {open_gs}
             <rect x="0" y="0" width="{STAGE_W}" height="{STAGE_H}" fill="#000" fill-opacity="0"/>
             <g class="luts-1x">
               <image href="{lut_paths['in_x_1x']}" x="{IN_LUTX_POS[0]}" y="{IN_LUTX_POS[1]}" width="{INPUT_PREVIEW_SZ}" height="4" preserveAspectRatio="none"/>
@@ -570,7 +573,7 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
                 <div class="ocr-drop" id="ocr-input" contenteditable="true" spellcheck="false" aria-label="Drag or paste a number image here"></div>
               </foreignObject>
             </g>
-          </g></g></g></g></g></g></g></g></g></g></g></g></g></g></g>
+          {close_gs}
         </svg>
 
         <div class="stage-hud" aria-hidden="true">
@@ -620,8 +623,8 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
 
     <div>
       <div class="panel-head">
-        <span class="panel-title">Draggable Colored &amp; Light-Paper OCR Numbers (Auto-Grayscaled &amp; Polarity-Normalized)</span>
-        <span class="panel-hint">Tests live BT.709 RGB→Grayscale + corner-background XOR inversion inside the SVG filter</span>
+        <span class="panel-title">Draggable Colored &amp; Light-Paper OCR Numbers (Auto-Grayscaled &amp; Contrast-Normalized)</span>
+        <span class="panel-hint">Tests live BT.709 RGB→Grayscale + Alpha-neutral polarity + SVG Auto-Levels inside the filter</span>
       </div>
       <div class="sample-strip">
         {paper_html}

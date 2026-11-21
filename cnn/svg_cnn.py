@@ -2,11 +2,10 @@
 """
 Multi-Stage Linear VRAM SVG <feConvolveMatrix> CNN Compiler & Simulator (`cnn/svg_cnn.py`).
 
-To avoid Blink/Skia's exponential O(2^depth) DAG re-evaluation on multi-layer diamond filter
-graphs, the CNN pipeline is partitioned across 7 nested HTML `<div>` stages (`s1..s7`).
-Each `<div>`'s CSS `filter: url(#...)` materializes a flat cached RGBA8888 texture (`y=0..47`
-acting as a Neural VRAM Register File), reducing per-stage filter depth to <= 6 and total
-HTML size to ~180 KB while keeping 100% zero-JavaScript HTML5 + CSS + SVG execution.
+Compiles our 3,004-parameter BatchNorm-free MNIST + OCR CNN (`weights.json`, 15 -> 24 -> 36 -> 10
+channels, exact 128/255 byte zero-point, and Stage 1 Auto-Levels) into nested SVG `<g>` filter
+stages (`<= 76` primitives per filter) so both Chrome/Skia and Safari/WebKit/CoreImage execute
+in O(N) time with zero JavaScript.
 """
 
 from __future__ import annotations
@@ -25,32 +24,33 @@ WEIGHTS_DEFAULT_PATH = os.path.join(CNN_DIR, "weights.json")
 ASSETS_DIR = os.path.join(CNN_DIR, "assets")
 
 # VRAM Register Coordinates in CSS pixels (identical on 1x and 2x!):
-# Row 0 (y = 0, step = 30px, max height = 28px < 30px):
+# Row 0 (y = 0, step = 30px, max height = 28px < 30px, max x = 658 < 720px):
 VRAM_X0 = (0, 0)
-VRAM_CONV1 = [(30 + 30 * g, 0) for g in range(4)]      # 30, 60, 90, 120
-VRAM_MIX2 = [(150 + 30 * g, 0) for g in range(5)]      # 150, 180, 210, 240, 270
-VRAM_DW2 = [(300 + 30 * g, 0) for g in range(5)]       # 300, 330, 360, 390, 420
-VRAM_P2C6 = [(460 + 10 * g, 0) for g in range(5)]      # 460..500 (6x6 compacted)
+VRAM_CONV1 = [(30 + 30 * g, 0) for g in range(5)]      # 30..150 (15 ch = 5 RGB)
+VRAM_MIX2 = [(180 + 30 * g, 0) for g in range(8)]      # 180..390 (24 ch = 8 RGB)
+VRAM_DW2 = [(420 + 30 * g, 0) for g in range(8)]       # 420..630 (24 ch = 8 RGB)
 
-# Row 1 (y = 30, step = 10px, max height = 6px; 30 + 6 = 36 < 48px):
-VRAM_MIX3 = [(10 * g, 30) for g in range(8)]           # 0..70
-VRAM_DW3 = [(90 + 10 * g, 30) for g in range(8)]       # 90..160
-VRAM_DW4 = [(180 + 10 * g, 30) for g in range(8)]      # 180..250
-VRAM_SM_PR = (280, 30)                                 # 10x1 strip
-VRAM_SM_WIN = (300, 30)                                # 10x1 strip
-VRAM_SM_NWIN = (320, 30)                               # 10x1 strip
+# Row 1 (y = 30, step = 10px, max height = 6px; 30 + 6 = 36 < 48px, max x = 560 < 720px):
+VRAM_P2C6 = [(10 * g, 30) for g in range(8)]           # 0..70   (6x6 compacted)
+VRAM_MIX3 = [(90 + 10 * g, 30) for g in range(12)]     # 90..200 (36 ch = 12 RGB)
+VRAM_DW3 = [(220 + 10 * g, 30) for g in range(12)]     # 220..330 (36 ch = 12 RGB)
+VRAM_DW4 = [(350 + 10 * g, 30) for g in range(12)]     # 350..460 (36 ch = 12 RGB)
+FC_TMP_X0 = 480                                        # 480, 485, 490, 495 (1x1 triplets)
+VRAM_SM_PR = (510, 30)                                 # 10x1 strip
+VRAM_SM_WIN = (530, 30)                                # 10x1 strip
+VRAM_SM_NWIN = (550, 30)                               # 10x1 strip
 
-VRAM_H = 48  # y = 0..47 reserved for VRAM registers; y = 48..303 holds SourceGraphic helpers
+VRAM_H = 48  # y = 0..47 reserved for VRAM registers; y = 48..321 holds SourceGraphic helpers
 
 # Layer radio options:
-#   (key, short_title, badge_shape, vram_slots, src_coords, src_box_phys, num_rgb_triplets, (cols, rows, cell_zoom_px, gap_px))
-LAYER_VIEWS: List[Tuple[str, str, str, List[Tuple[int, int]], List[int], int, int, Tuple[int, int, int, int]]] = [
-    ("conv1",   "Conv1 (5×5)",        "12 ch → 4 RGB · 24×24", VRAM_CONV1, list(range(2, 26)),    28, 4, (2, 2, 3, 10)),
-    ("mix2",    "Pool1 + Mix2 (1×1)", "15 ch → 5 RGB · 12×12", VRAM_MIX2,  list(range(2, 26, 2)), 28, 5, (3, 2, 5, 8)),
-    ("dwconv2", "DWConv2 (3×3)",      "15 ch → 5 RGB · 10×10", VRAM_DW2,   list(range(4, 24, 2)), 28, 5, (3, 2, 6, 8)),
-    ("mix3",    "Pool2 + Mix3 (1×1)", "24 ch → 8 RGB · 5×5",   VRAM_MIX3,  [0, 1, 2, 3, 4],        6, 8, (4, 2, 9, 7)),
-    ("dwconv3", "DWConv3 (3×3)",      "24 ch → 8 RGB · 3×3",   VRAM_DW3,   [1, 2, 3],              6, 8, (4, 2, 15, 7)),
-    ("dwconv4", "DWConv4 (Global)",   "24 ch → 8 RGB · 1×1",   VRAM_DW4,   [2],                    6, 8, (4, 2, 42, 8)),
+#   (key, short_title, badge_shape, vram_slots, src_coords, src_box_phys, num_rgb_triplets, (cols, rows, cell_zoom_px, gap_x, gap_y))
+LAYER_VIEWS: List[Tuple[str, str, str, List[Tuple[int, int]], List[int], int, int, Tuple[int, int, int, int, int]]] = [
+    ("conv1",   "Conv1 (5×5)",        "15 ch → 5 RGB · 24×24", VRAM_CONV1, list(range(2, 26)),    28, 5,  (3, 2, 2, 12, 16)),
+    ("mix2",    "Pool1 + Mix2 (1×1)", "24 ch → 8 RGB · 12×12", VRAM_MIX2,  list(range(2, 26, 2)), 28, 8,  (4, 2, 4, 6,  16)),
+    ("dwconv2", "DWConv2 (3×3)",      "24 ch → 8 RGB · 10×10", VRAM_DW2,   list(range(4, 24, 2)), 28, 8,  (4, 2, 4, 8,  16)),
+    ("mix3",    "Pool2 + Mix3 (1×1)", "36 ch → 12 RGB · 5×5",  VRAM_MIX3,  [0, 1, 2, 3, 4],        6, 12, (4, 3, 8, 8,  15)),
+    ("dwconv3", "DWConv3 (3×3)",      "36 ch → 12 RGB · 3×3",  VRAM_DW3,   [1, 2, 3],              6, 12, (4, 3, 13, 8, 15)),
+    ("dwconv4", "DWConv4 (Global)",   "36 ch → 12 RGB · 1×1",  VRAM_DW4,   [2],                    6, 12, (4, 3, 38, 9, 15)),
 ]
 
 STAGE_W = 720
@@ -110,7 +110,7 @@ def q8(x: np.ndarray | float) -> np.ndarray:
 def _fmt_num(v: float) -> str:
     if abs(v) < 1e-9:
         return "0"
-    s = f"{v:.5f}".rstrip("0").rstrip(".")
+    s = f"{v:.6f}".rstrip("0").rstrip(".")
     return "0" if s in ("", "-0") else s
 
 
@@ -161,59 +161,96 @@ def svg_lut_eval(x: np.ndarray, table_vals: Sequence[float]) -> np.ndarray:
     return q8(tbl[idx] * (1.0 - frac) + tbl[idx + 1] * frac)
 
 
-def preprocess_rgba_to_x0(rgba_28x28: np.ndarray, auto_polarity: bool = True) -> Tuple[np.ndarray, int]:
+def preprocess_rgba_to_x0(
+    rgba_28x28: np.ndarray,
+    prep_spec: dict | None = None,
+    auto_polarity: bool = True,
+) -> Tuple[np.ndarray, int]:
+    """Exact Stage 1 preprocessing: Alpha-neutral multi-edge polarity detection + 8-bit Auto-Levels."""
     arr = np.asarray(rgba_28x28, dtype=np.float64)
     if arr.ndim == 2:
         rgb = np.stack([arr, arr, arr], axis=-1)
-        alpha = np.ones((28, 28, 1), dtype=np.float64)
+        alpha = np.ones((28, 28), dtype=np.float64)
     elif arr.shape[-1] == 3:
         rgb = arr
-        alpha = np.ones((28, 28, 1), dtype=np.float64)
+        alpha = np.ones((28, 28), dtype=np.float64)
     else:
         rgb = arr[..., :3]
-        alpha = arr[..., 3:4]
+        alpha = arr[..., 3]
 
     if arr.max() > 1.001:
         rgb = rgb / 255.0
         if arr.ndim == 3 and arr.shape[-1] == 4:
             alpha = alpha / 255.0
 
-    comp_rgb = q8(rgb * alpha)
-    gray_raw = q8(0.2126 * comp_rgb[..., 0] + 0.7152 * comp_rgb[..., 1] + 0.0722 * comp_rgb[..., 2])
-    if not auto_polarity:
-        return gray_raw, 0
+    rgb = np.clip(rgb, 0.0, 1.0)
+    alpha = q8(alpha)
 
-    corner_avg = svg_fe_convolve_2d(gray_raw, [5, 5], 2, 2, [1.0] * 25, 25.0, 0.0)
-    is_light = 1 if float(corner_avg[2, 2]) >= 0.5 else 0
-    x0 = q8(np.abs(gray_raw - is_light))
+    # Alpha-neutral BT.709 luminance vote: transparent letterbox pixels (A=0) map to neutral 127/255 (~0.498)
+    n0 = 127.0 / 255.0
+    gray_raw = 0.2126 * rgb[..., 0] + 0.7152 * rgb[..., 1] + 0.0722 * rgb[..., 2]
+    vn = q8(np.where(alpha > 0.0, gray_raw - n0 * alpha + n0, n0))
+
+    if auto_polarity:
+        cbg = svg_fe_convolve_2d(vn, [5, 5], 2, 2, [1.0] * 25, 25.0, 0.0)
+        a1 = q8(0.5 * cbg[2, 2] + 0.5 * cbg[2, 14])
+        a2 = q8(0.666667 * a1 + 0.333333 * cbg[14, 2])
+        is_light = 1 if float(a2) >= 0.5 else 0
+    else:
+        is_light = 0
+
+    xp_raw = q8(np.abs(vn - is_light))
+    x_pol = q8(xp_raw * alpha)
+
+    prep = prep_spec or {}
+    if not prep.get("auto_levels", False):
+        return x_pol, is_light
+
+    # Fill A=0 letterbox pixels with 1.0 before global erode so background floor ignores letterbox bars
+    xp_w = q8(x_pol + (1.0 - alpha))
+    bg_min = float(np.min(xp_w))
+    inv_bg = float(q8(1.0 - bg_min))
+    k_pol = float(prep["floor_k_pol"])
+    k_min = float(prep["floor_k_min"])
+    x_clean = q8(k_pol * x_pol + k_min * inv_bg - k_min)
+
+    peak = float(np.max(x_clean))
+    inv_pk = float(svg_lut_eval(np.array([peak]), prep["inv_peak_table_values"])[0])
+    x0 = q8(float(prep["peak_gain_k1"]) * x_clean * inv_pk)
     return x0, is_light
 
 
 def simulate_svg_cnn(rgba_28x28: np.ndarray, spec: dict, auto_polarity: bool = True) -> SVGSimResult:
-    x0, is_light = preprocess_rgba_to_x0(rgba_28x28, auto_polarity=auto_polarity)
+    x0, is_light = preprocess_rgba_to_x0(rgba_28x28, spec.get("preprocessing"), auto_polarity=auto_polarity)
     layers = spec["layers"]
+    n_c1_groups = layers["conv1"]["num_channels"] // 3
+    n_m2_groups = layers["mix2"]["out_channels"] // 3
 
     c1_ch = [
         svg_fe_convolve_2d(x0, f["order"], f["targetX"], f["targetY"], f["kernelMatrix"], f["divisor"], f["bias"])
         for f in layers["conv1"]["filters"]
     ]
-    c1_rgb = np.stack([np.stack([c1_ch[3 * g], c1_ch[3 * g + 1], c1_ch[3 * g + 2]], axis=-1) for g in range(4)], axis=0)
+    c1_rgb = np.stack(
+        [np.stack([c1_ch[3 * g], c1_ch[3 * g + 1], c1_ch[3 * g + 2]], axis=-1) for g in range(n_c1_groups)],
+        axis=0,
+    )
 
     p1_s = layers["pool1"]
     p1_rgb = np.stack(
         [svg_fe_convolve_2d(c1_rgb[g], p1_s["order"], p1_s["targetX"], p1_s["targetY"], p1_s["kernelMatrix"], p1_s["divisor"], 0.0)
-         for g in range(4)],
+         for g in range(n_c1_groups)],
         axis=0,
     )
 
     def run_pointwise_rgb(in_rgb: np.ndarray, pw_spec: dict) -> np.ndarray:
+        z0 = float(pw_spec.get("zero_point", 0.5))
         out_groups = []
         for trip in pw_spec["triplets"]:
             acc = None
             for g, mat20 in enumerate(trip["color_matrices"]):
                 m = np.asarray(mat20, dtype=np.float64).reshape(4, 5)[:3, :]
                 part = q8(np.einsum("rc,hwc->hwr", m[:, :3], in_rgb[g]) + m[:, 4].reshape(1, 1, 3))
-                acc = part if acc is None else q8(acc + part - 0.5)
+                acc = part if acc is None else q8(acc + part - z0)
             slopes = np.asarray(trip["rescale_slopes"], dtype=np.float64).reshape(1, 1, 3)
             intercepts = np.asarray(trip["rescale_intercepts"], dtype=np.float64).reshape(1, 1, 3)
             out_groups.append(q8(acc * slopes + intercepts))
@@ -243,13 +280,13 @@ def simulate_svg_cnn(rgba_28x28: np.ndarray, spec: dict, auto_polarity: bool = T
     p2_s = layers["pool2"]
     p2_rgb_28 = np.stack(
         [svg_fe_convolve_2d(c2_rgb[g], p2_s["order"], p2_s["targetX"], p2_s["targetY"], p2_s["kernelMatrix"], p2_s["divisor"], 0.0)
-         for g in range(5)],
+         for g in range(n_m2_groups)],
         axis=0,
     )
 
-    p2_c6 = np.zeros((5, 6, 6, 3), dtype=np.float64)
+    p2_c6 = np.zeros((n_m2_groups, 6, 6, 3), dtype=np.float64)
     src_5 = [4, 8, 12, 16, 20]
-    p2_c6[:, :5, :5, :] = p2_rgb_28[np.ix_(range(5), src_5, src_5, range(3))]
+    p2_c6[:, :5, :5, :] = p2_rgb_28[np.ix_(range(n_m2_groups), src_5, src_5, range(3))]
 
     m3_c6 = run_pointwise_rgb(p2_c6, layers["mix3"])
     c3_c6 = run_depthwise_rgb(m3_c6, layers["dwconv3"], force_dense_3x3=True)
@@ -262,6 +299,7 @@ def simulate_svg_cnn(rgba_28x28: np.ndarray, spec: dict, auto_polarity: bool = T
         layer_rgb_maps[key] = raw_buffers[key][ix]
 
     h_anchor = c4_c6[:, 2, 2, :]
+    z0_fc = float(layers["fc"].get("zero_point", 0.5))
     u_pad = np.zeros(12, dtype=np.float64)
     for trip in layers["fc"]["triplets"]:
         o = trip["out_triplet"]
@@ -269,11 +307,11 @@ def simulate_svg_cnn(rgba_28x28: np.ndarray, spec: dict, auto_polarity: bool = T
         for g, mat20 in enumerate(trip["color_matrices"]):
             m = np.asarray(mat20, dtype=np.float64).reshape(4, 5)[:3, :]
             part = q8(m[:, :3] @ h_anchor[g] + m[:, 4])
-            acc = part if acc is None else q8(acc + part - 0.5)
+            acc = part if acc is None else q8(acc + part - z0_fc)
         u_pad[3 * o : 3 * (o + 1)] = acc
 
     u_logits = u_pad[:10]
-    decoded_logits = (u_logits - 0.5) * (2.0 * float(layers["fc"]["logit_half_range_M"]))
+    decoded_logits = (u_logits - z0_fc) * (2.0 * float(layers["fc"]["logit_half_range_M"]))
 
     sm = layers["softmax"]
     u_max = np.max(u_logits)
@@ -285,8 +323,10 @@ def simulate_svg_cnn(rgba_28x28: np.ndarray, spec: dict, auto_polarity: bool = T
     p_log = q8(d - float(sm["logsum_sub_k"]) * v_full)
     probs = svg_lut_eval(p_log, sm["exp_table_values"])
 
-    return SVGSimResult(x0=x0, is_light_bg=is_light, layer_rgb_maps=layer_rgb_maps,
-                        u_logits=u_logits, logits=decoded_logits, probs=probs, pred=int(np.argmax(probs)))
+    return SVGSimResult(
+        x0=x0, is_light_bg=is_light, layer_rgb_maps=layer_rgb_maps,
+        u_logits=u_logits, logits=decoded_logits, probs=probs, pred=int(np.argmax(probs)),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -304,9 +344,6 @@ def build_1d_gray_lut(
 ) -> Image.Image:
     """Build a Display-P3-immune & linear-light-quantization-immune neutral grayscale (`R=G=B`, `A=255`)
     1D periodic LUT strip with all byte values in `[128 .. 128 + src_box_phys - 1]` (`>= 128` bright sRGB!).
-    Because `<feTile>` repeats the `src_box_phys` source patch periodically, `(target - idx) % src_box_phys`
-    is always in `[0 .. src_box_phys - 1]`, avoiding dark sRGB values (`< 124`) that CoreImage linear-light
-    intermediate buffers quantize across multi-stage filter chains.
     """
     idx = np.arange(length_phys, dtype=np.int32)
     target = np.full(length_phys, int(dead_coord), dtype=np.int32)
@@ -371,7 +408,7 @@ def write_filter_lut_assets(assets_dir: str = ASSETS_DIR) -> Dict[str, str]:
         )
         paths[f"bar_{dpr}x"] = f"assets/{fn_bar}"
 
-        for key, _, _, _, coords, src_box, _, (_, _, cell_zoom, _) in LAYER_VIEWS:
+        for key, _, _, _, coords, src_box, _, (_, _, cell_zoom, _, _) in LAYER_VIEWS:
             if key == "dwconv4":
                 continue  # dwconv4 uses exact <feTile> solid color swatches!
             tw_css = len(coords) * cell_zoom
@@ -386,14 +423,20 @@ def write_filter_lut_assets(assets_dir: str = ASSETS_DIR) -> Dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# Multi-Stage O(N) Linear VRAM SVG <filter> Compiler (<= 75 prims/stage for WebKit & Blink!)
+# Multi-Stage O(N) Linear VRAM SVG <filter> Compiler (<= 76 prims/stage for WebKit & Blink!)
 # ---------------------------------------------------------------------------
 
 COMPUTE_STAGE_IDS: Tuple[str, ...] = (
-    "s1", "s2", "s3a", "s3b", "s4a", "s4b", "s5a", "s5b", "s6a", "s6b", "s6c", "visbarsa", "visbarsb",
+    "s1", "s1b",
+    "s2a", "s2b", "s2c",
+    "s3a", "s3b", "s3c",
+    "s4a", "s4b", "s4c", "s4d",
+    "s5a", "s5b", "s5c",
+    "s6a", "s6b", "s6c",
+    "visbarsa", "visbarsb",
 )
 
-SPLIT_VISUAL_LAYERS: Tuple[str, ...] = ("mix2", "dwconv2", "mix3", "dwconv3")
+THREE_ROW_VISUAL_LAYERS: Tuple[str, ...] = ("mix3", "dwconv3", "dwconv4")
 
 
 def _wrap_filter(
@@ -444,10 +487,7 @@ def _emit_2pass_gray_zoom(
     disp_scale: str,
     out_name: str,
 ) -> None:
-    """Display-P3-immune, WebKit-safe & linear-light-quantization-immune 2-pass periodic zoom.
-    Tiles the `src_sz x src_sz` source patch across `(dst_x, dst_y)` before displacing so every LUT byte
-    stays in `[128 .. 155]` (`>= 128` bright sRGB, zero multi-stage CoreImage quantization).
-    """
+    """Display-P3-immune, WebKit-safe & linear-light-quantization-immune 2-pass periodic zoom."""
     _ = sh_css
     pad_a = int(118 * u) + 4
     a_shift = 115.0 * u
@@ -502,91 +542,141 @@ def _emit_passthrough_merge(p: List[str], new_nodes: Sequence[str], keep_vram: b
 
 def compile_compute_stages(spec: dict, dpr: int) -> List[str]:
     """Compile compute & Softmax bar stages for a given dpr (1 or 2).
-    Every stage reads ONLY `SourceGraphic` from its child SVG `<g>` stage and stays <= 75 primitives
+    Every stage reads ONLY `SourceGraphic` from its child SVG `<g>` stage and stays <= 76 primitives
     so both Chrome/Skia and Safari/CoreImage execute in O(N) time without hitting WebKit's filter caps.
     """
     u = 1.0 if dpr == 1 else 0.5
     t_sz = int(28 * u)
+    t2_sz = 2 * t_sz
     c6_sz = int(6 * u)
+    sh12 = int(12 * u)
+    m_rad = _fmt_num(14.0 * u)
     disp_scale = _fmt_num(230.0 * u)
     layers = spec["layers"]
+    prep = spec.get("preprocessing", {})
     out_filters: List[str] = []
 
-    # --- Stage 1 (normal & polarity-flipped): Grayscale + Auto-Polarity XOR -> x0 + Conv1 -> VRAM_CONV1 ---
+    # --- Stage 1 (normal & polarity-flipped): Alpha-Aware Polarity + 8-Bit Auto-Levels -> x0 (33 prims) ---
+    n0_s = _fmt_num(127.0 / 255.0)
+    nn0_s = _fmt_num(-127.0 / 255.0)
+    vn_mat = (
+        f"0.2126 0.7152 0.0722 {nn0_s} {n0_s} "
+        f"0.2126 0.7152 0.0722 {nn0_s} {n0_s} "
+        f"0.2126 0.7152 0.0722 {nn0_s} {n0_s} "
+        "0 0 0 0 1"
+    )
+    use_al = bool(prep.get("auto_levels", False))
+    if use_al:
+        k_pol_s = _fmt_num(prep["floor_k_pol"])
+        k_min_s = _fmt_num(prep["floor_k_min"])
+        nk_min_s = _fmt_num(-float(prep["floor_k_min"]))
+        pk_k1_s = _fmt_num(prep["peak_gain_k1"])
+        inv_pk_tbl = _fmt_list(prep["inv_peak_table_values"])
+
     for inv_sfx, tbl_pol in (("", "0 1"), ("i", "1 0")):
         p1: List[str] = []
         p1.append(f'<feOffset in="SourceGraphic" dx="{-INPUT_PREVIEW_X}" dy="{-INPUT_SRC_Y}" x="0" y="0" width="{t_sz}" height="{t_sz}" result="s0"/>')
-        p1.append(f'<feFlood x="0" y="0" width="{t_sz}" height="{t_sz}" flood-color="#000000" flood-opacity="1" result="bg0"/>')
-        p1.append(f'<feComposite in="s0" in2="bg0" x="0" y="0" width="{t_sz}" height="{t_sz}" operator="over" result="so"/>')
-        p1.append(f'<feColorMatrix in="so" x="0" y="0" width="{t_sz}" height="{t_sz}" type="matrix" values="0.2126 0.7152 0.0722 0 0 0.2126 0.7152 0.0722 0 0 0.2126 0.7152 0.0722 0 0 0 0 0 0 1" result="gr"/>')
-        p1.append(f'<feConvolveMatrix in="gr" x="0" y="0" width="{t_sz}" height="{t_sz}" order="5 5" targetX="2" targetY="2" divisor="25" bias="0" kernelMatrix="{" ".join(["1"] * 25)}" edgeMode="none" preserveAlpha="true" result="cbg"/>')
+        p1.append(f'<feColorMatrix in="s0" x="0" y="0" width="{t_sz}" height="{t_sz}" type="matrix" values="{vn_mat}" result="vn"/>')
+        p1.append(f'<feConvolveMatrix in="vn" x="0" y="0" width="{t_sz}" height="{t_sz}" order="5 5" targetX="2" targetY="2" divisor="25" bias="0" kernelMatrix="{" ".join(["1"] * 25)}" edgeMode="none" preserveAlpha="true" result="cbg"/>')
+        p1.append(f'<feOffset in="cbg" dx="{-sh12}" dy="0" x="0" y="0" width="{c6_sz}" height="{c6_sz}" result="cbg_tc"/>')
+        p1.append(f'<feOffset in="cbg" dx="0" dy="{-sh12}" x="0" y="0" width="{c6_sz}" height="{c6_sz}" result="cbg_lc"/>')
+        p1.append(f'<feComposite in="cbg" in2="cbg_tc" x="0" y="0" width="{c6_sz}" height="{c6_sz}" operator="arithmetic" k1="0" k2="0.5" k3="0.5" k4="0" result="cbg_a1"/>')
+        p1.append(f'<feComposite in="cbg_a1" in2="cbg_lc" x="0" y="0" width="{c6_sz}" height="{c6_sz}" operator="arithmetic" k1="0" k2="0.666667" k3="0.333333" k4="0" result="cbg_a2"/>')
         p1.append(f'<feOffset in="SourceGraphic" dx="{-ANCHOR_MASK_X}" dy="{-ANCHOR_MASK_Y}" x="0" y="0" width="{c6_sz}" height="{c6_sz}" result="amask"/>')
-        p1.append(f'<feComposite in="cbg" in2="amask" x="0" y="0" width="{c6_sz}" height="{c6_sz}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="cbgm"/>')
+        p1.append(f'<feComposite in="cbg_a2" in2="amask" x="0" y="0" width="{c6_sz}" height="{c6_sz}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="cbgm"/>')
         p1.append(f'<feMorphology in="cbgm" x="0" y="0" width="{c6_sz}" height="{c6_sz}" operator="dilate" radius="2" result="cbgd"/>')
         p1.append('<feOffset in="cbgd" dx="0" dy="0" x="1" y="1" width="1" height="1" result="cbg1"/>')
         p1.append(f'<feTile in="cbg1" x="0" y="0" width="{t_sz}" height="{t_sz}" result="ctile"/>')
         p1.append(f'<feComponentTransfer in="ctile" x="0" y="0" width="{t_sz}" height="{t_sz}" result="isl"><feFuncR type="discrete" tableValues="{tbl_pol}"/><feFuncG type="discrete" tableValues="{tbl_pol}"/><feFuncB type="discrete" tableValues="{tbl_pol}"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>')
-        p1.append(f'<feBlend in="gr" in2="isl" x="0" y="0" width="{t_sz}" height="{t_sz}" mode="difference" result="x0"/>')
-
-        s1_outs = ["x0"]
-        for f in layers["conv1"]["filters"]:
-            ch = f["channel"]
-            g, c_off = ch // 3, ch % 3
-            vx, vy = VRAM_CONV1[g]
-            if c_off == 0:
-                p1.append(f'<feOffset in="x0" dx="{vx}" dy="{vy}" x="{vx}" y="{vy}" width="{t_sz}" height="{t_sz}" result="x0_{ch}"/>')
-            p1.append(
-                f'<feConvolveMatrix in="x0_{3*g}" x="{vx}" y="{vy}" width="{t_sz}" height="{t_sz}" '
-                f'order="5 5" targetX="2" targetY="2" divisor="1" bias="{_fmt_num(f["bias"])}" '
-                f'kernelMatrix="{_fmt_list(f["kernelMatrix"])}" edgeMode="none" preserveAlpha="true" result="c1_{ch}"/>'
-            )
-        for g in range(4):
-            vx, vy = VRAM_CONV1[g]
-            _pack_rgb_at(p1, f"c1_{3*g}", f"c1_{3*g+1}", f"c1_{3*g+2}", vx, vy, t_sz, f"c1g_{g}")
-            s1_outs.append(f"c1g_{g}")
-        _emit_passthrough_merge(p1, s1_outs, keep_vram=False)
+        p1.append(f'<feBlend in="vn" in2="isl" x="0" y="0" width="{t_sz}" height="{t_sz}" mode="difference" result="xp_raw"/>')
+        p1.append(f'<feComposite in="xp_raw" in2="s0" x="0" y="0" width="{t_sz}" height="{t_sz}" operator="in" result="xp_in"/>')
+        p1.append(f'<feFlood x="0" y="0" width="{t_sz}" height="{t_sz}" flood-color="#000000" flood-opacity="1" result="bg0"/>')
+        if use_al:
+            p1.append(f'<feComposite in="xp_in" in2="bg0" x="0" y="0" width="{t_sz}" height="{t_sz}" operator="over" result="x_pol"/>')
+            p1.append(f'<feFlood x="0" y="0" width="{t_sz}" height="{t_sz}" flood-color="#ffffff" flood-opacity="1" result="bg1"/>')
+            p1.append(f'<feComposite in="xp_in" in2="bg1" x="0" y="0" width="{t_sz}" height="{t_sz}" operator="over" result="xp_w"/>')
+            p1.append(f'<feTile in="xp_w" x="0" y="0" width="{t2_sz}" height="{t2_sz}" result="xpw_t"/>')
+            p1.append(f'<feMorphology in="xpw_t" x="0" y="0" width="{t2_sz}" height="{t2_sz}" operator="erode" radius="{m_rad}" result="bge"/>')
+            p1.append(f'<feOffset in="bge" dx="{-t_sz}" dy="{-t_sz}" x="0" y="0" width="1" height="1" result="bg1px"/>')
+            p1.append(f'<feTile in="bg1px" x="0" y="0" width="{t_sz}" height="{t_sz}" result="bgm"/>')
+            p1.append(f'<feComponentTransfer in="bgm" x="0" y="0" width="{t_sz}" height="{t_sz}" result="inv_bg"><feFuncR type="linear" slope="-1" intercept="1"/><feFuncG type="linear" slope="-1" intercept="1"/><feFuncB type="linear" slope="-1" intercept="1"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>')
+            p1.append(f'<feComposite in="x_pol" in2="inv_bg" x="0" y="0" width="{t_sz}" height="{t_sz}" operator="arithmetic" k1="0" k2="{k_pol_s}" k3="{k_min_s}" k4="{nk_min_s}" result="x_cln"/>')
+            p1.append(f'<feTile in="x_cln" x="0" y="0" width="{t2_sz}" height="{t2_sz}" result="xct"/>')
+            p1.append(f'<feMorphology in="xct" x="0" y="0" width="{t2_sz}" height="{t2_sz}" operator="dilate" radius="{m_rad}" result="pkd"/>')
+            p1.append(f'<feOffset in="pkd" dx="{-t_sz}" dy="{-t_sz}" x="0" y="0" width="1" height="1" result="pk1"/>')
+            p1.append(f'<feTile in="pk1" x="0" y="0" width="{t_sz}" height="{t_sz}" result="pkt"/>')
+            p1.append(f'<feComponentTransfer in="pkt" x="0" y="0" width="{t_sz}" height="{t_sz}" result="inv_pk"><feFuncR type="table" tableValues="{inv_pk_tbl}"/><feFuncG type="table" tableValues="{inv_pk_tbl}"/><feFuncB type="table" tableValues="{inv_pk_tbl}"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>')
+            p1.append(f'<feComposite in="x_cln" in2="inv_pk" x="0" y="0" width="{t_sz}" height="{t_sz}" operator="arithmetic" k1="{pk_k1_s}" k2="0" k3="0" k4="0" result="x0"/>')
+        else:
+            p1.append(f'<feComposite in="xp_in" in2="bg0" x="0" y="0" width="{t_sz}" height="{t_sz}" operator="over" result="x0"/>')
+        _emit_passthrough_merge(p1, ["x0"], keep_vram=False)
         out_filters.append(_wrap_filter(f"cnn-s1{inv_sfx}-{dpr}x", p1))
 
-    # --- Stage 2: Pool1 + Mix2 -> VRAM_MIX2 (64 prims) ---
-    p2: List[str] = []
-    p2.append(
-        f'<feConvolveMatrix in="SourceGraphic" x="30" y="0" width="120" height="{t_sz}" '
-        f'order="2 2" targetX="0" targetY="0" divisor="4" bias="0" '
-        f'kernelMatrix="1 1 1 1" edgeMode="none" preserveAlpha="true" result="p1_strip"/>'
-    )
-    s2_outs = []
-    for trip in layers["mix2"]["triplets"]:
-        o = trip["out_triplet"]
-        ox, oy = VRAM_MIX2[o]
-        acc = ""
-        for g, mat20 in enumerate(trip["color_matrices"]):
-            gx, gy = VRAM_CONV1[g]
-            p2.append(f'<feOffset in="p1_strip" dx="{ox - gx}" dy="{oy - gy}" x="{ox}" y="{oy}" width="{t_sz}" height="{t_sz}" result="m2i_{o}_{g}"/>')
-            p2.append(f'<feColorMatrix in="m2i_{o}_{g}" x="{ox}" y="{oy}" width="{t_sz}" height="{t_sz}" type="matrix" values="{_fmt_list(mat20)}" result="m2p_{o}_{g}"/>')
-            if g == 0:
-                acc = f"m2p_{o}_{g}"
-            else:
-                nxt = f"m2a_{o}_{g}"
-                p2.append(f'<feComposite in="{acc}" in2="m2p_{o}_{g}" x="{ox}" y="{oy}" width="{t_sz}" height="{t_sz}" operator="arithmetic" k1="0" k2="1" k3="1" k4="-0.5" result="{nxt}"/>')
-                acc = nxt
-        sl, ic = trip["rescale_slopes"], trip["rescale_intercepts"]
-        p2.append(
-            f'<feComponentTransfer in="{acc}" x="{ox}" y="{oy}" width="{t_sz}" height="{t_sz}" result="m2g_{o}">'
-            f'<feFuncR type="linear" slope="{_fmt_num(sl[0])}" intercept="{_fmt_num(ic[0])}"/>'
-            f'<feFuncG type="linear" slope="{_fmt_num(sl[1])}" intercept="{_fmt_num(ic[1])}"/>'
-            f'<feFuncB type="linear" slope="{_fmt_num(sl[2])}" intercept="{_fmt_num(ic[2])}"/>'
-            f'<feFuncA type="discrete" tableValues="1"/></feComponentTransfer>'
+    # --- Stage 1b: Conv1 (15 ch = 5 RGB tiles -> VRAM_CONV1, 48 prims) ---
+    p1b: List[str] = []
+    s1b_outs: List[str] = []
+    n_c1_groups = layers["conv1"]["num_channels"] // 3
+    for f in layers["conv1"]["filters"]:
+        ch = f["channel"]
+        g, c_off = ch // 3, ch % 3
+        vx, vy = VRAM_CONV1[g]
+        if c_off == 0:
+            p1b.append(f'<feOffset in="SourceGraphic" dx="{vx}" dy="{vy}" x="{vx}" y="{vy}" width="{t_sz}" height="{t_sz}" result="x0_{ch}"/>')
+        p1b.append(
+            f'<feConvolveMatrix in="x0_{3*g}" x="{vx}" y="{vy}" width="{t_sz}" height="{t_sz}" '
+            f'order="5 5" targetX="2" targetY="2" divisor="1" bias="{_fmt_num(f["bias"])}" '
+            f'kernelMatrix="{_fmt_list(f["kernelMatrix"])}" edgeMode="none" preserveAlpha="true" result="c1_{ch}"/>'
         )
-        s2_outs.append(f"m2g_{o}")
-    _emit_passthrough_merge(p2, s2_outs, keep_vram=True)
-    out_filters.append(_wrap_filter(f"cnn-s2-{dpr}x", p2))
+    for g in range(n_c1_groups):
+        vx, vy = VRAM_CONV1[g]
+        _pack_rgb_at(p1b, f"c1_{3*g}", f"c1_{3*g+1}", f"c1_{3*g+2}", vx, vy, t_sz, f"c1g_{g}")
+        s1b_outs.append(f"c1g_{g}")
+    _emit_passthrough_merge(p1b, s1b_outs, keep_vram=True)
+    out_filters.append(_wrap_filter(f"cnn-s1b-{dpr}x", p1b))
 
-    # --- Stages 3a & 3b: DWConv2 -> VRAM_DW2 + Pool2 + 6x6 Compaction -> VRAM_P2C6 ---
+    # --- Stages 2a, 2b, 2c: Pool1 + Mix2 (5 -> 8 triplets, <= 49 prims/stage) -> VRAM_MIX2 ---
+    m2_trips = layers["mix2"]["triplets"]
+    nz0_m2 = _fmt_num(-float(layers["mix2"].get("zero_point", 0.5)))
+    c1_strip_w = 30 * n_c1_groups
+    for part_sfx, trip_slice in (("a", m2_trips[:3]), ("b", m2_trips[3:6]), ("c", m2_trips[6:])):
+        p2: List[str] = [
+            f'<feConvolveMatrix in="SourceGraphic" x="30" y="0" width="{c1_strip_w}" height="{t_sz}" '
+            f'order="2 2" targetX="0" targetY="0" divisor="4" bias="0" '
+            f'kernelMatrix="1 1 1 1" edgeMode="none" preserveAlpha="true" result="p1_strip"/>'
+        ]
+        s2_outs = []
+        for trip in trip_slice:
+            o = trip["out_triplet"]
+            ox, oy = VRAM_MIX2[o]
+            acc = ""
+            for g, mat20 in enumerate(trip["color_matrices"]):
+                gx, gy = VRAM_CONV1[g]
+                p2.append(f'<feOffset in="p1_strip" dx="{ox - gx}" dy="{oy - gy}" x="{ox}" y="{oy}" width="{t_sz}" height="{t_sz}" result="m2i_{o}_{g}"/>')
+                p2.append(f'<feColorMatrix in="m2i_{o}_{g}" x="{ox}" y="{oy}" width="{t_sz}" height="{t_sz}" type="matrix" values="{_fmt_list(mat20)}" result="m2p_{o}_{g}"/>')
+                if g == 0:
+                    acc = f"m2p_{o}_{g}"
+                else:
+                    nxt = f"m2a_{o}_{g}"
+                    p2.append(f'<feComposite in="{acc}" in2="m2p_{o}_{g}" x="{ox}" y="{oy}" width="{t_sz}" height="{t_sz}" operator="arithmetic" k1="0" k2="1" k3="1" k4="{nz0_m2}" result="{nxt}"/>')
+                    acc = nxt
+            sl, ic = trip["rescale_slopes"], trip["rescale_intercepts"]
+            p2.append(
+                f'<feComponentTransfer in="{acc}" x="{ox}" y="{oy}" width="{t_sz}" height="{t_sz}" result="m2g_{o}">'
+                f'<feFuncR type="linear" slope="{_fmt_num(sl[0])}" intercept="{_fmt_num(ic[0])}"/>'
+                f'<feFuncG type="linear" slope="{_fmt_num(sl[1])}" intercept="{_fmt_num(ic[1])}"/>'
+                f'<feFuncB type="linear" slope="{_fmt_num(sl[2])}" intercept="{_fmt_num(ic[2])}"/>'
+                f'<feFuncA type="discrete" tableValues="1"/></feComponentTransfer>'
+            )
+            s2_outs.append(f"m2g_{o}")
+        _emit_passthrough_merge(p2, s2_outs, keep_vram=True)
+        out_filters.append(_wrap_filter(f"cnn-s2{part_sfx}-{dpr}x", p2))
+
+    # --- Stages 3a, 3b, 3c: DWConv2 -> VRAM_DW2 + Pool2 + 6x6 Compaction -> VRAM_P2C6 (<= 72 prims/stage) ---
     flts2 = layers["dwconv2"]["filters"]
     p24_sz = int(24 * u)
     c5x_x, c5x_y = C5_LUTX_POS
     c5y_x, c5y_y = C5_LUTY_POS
-    for part_sfx, g_range in (("a", range(0, 3)), ("b", range(3, 5))):
+    for part_sfx, g_range in (("a", range(0, 3)), ("b", range(3, 6)), ("c", range(6, 8))):
         p3: List[str] = []
         s3_outs = []
         for g in g_range:
@@ -616,9 +706,10 @@ def compile_compute_stages(spec: dict, dpr: int) -> List[str]:
         _emit_passthrough_merge(p3, s3_outs, keep_vram=True)
         out_filters.append(_wrap_filter(f"cnn-s3{part_sfx}-{dpr}x", p3))
 
-    # --- Stages 4a & 4b: Mix3 (5 -> 8 triplets on 6x6 patches, 4 triplets/stage = 63 prims) -> VRAM_MIX3 ---
+    # --- Stages 4a..4d: Mix3 (8 -> 12 triplets on 6x6 patches, 3 triplets/stage = 75 prims) -> VRAM_MIX3 ---
     m3_trips = layers["mix3"]["triplets"]
-    for part_sfx, trip_slice in (("a", m3_trips[:4]), ("b", m3_trips[4:])):
+    nz0_m3 = _fmt_num(-float(layers["mix3"].get("zero_point", 0.5)))
+    for part_sfx, trip_slice in (("a", m3_trips[:3]), ("b", m3_trips[3:6]), ("c", m3_trips[6:9]), ("d", m3_trips[9:])):
         p4: List[str] = []
         s4_outs = []
         for trip in trip_slice:
@@ -633,7 +724,7 @@ def compile_compute_stages(spec: dict, dpr: int) -> List[str]:
                     acc = f"m3p_{o}_{g}"
                 else:
                     nxt = f"m3a_{o}_{g}"
-                    p4.append(f'<feComposite in="{acc}" in2="m3p_{o}_{g}" x="{ox}" y="{oy}" width="{c6_sz}" height="{c6_sz}" operator="arithmetic" k1="0" k2="1" k3="1" k4="-0.5" result="{nxt}"/>')
+                    p4.append(f'<feComposite in="{acc}" in2="m3p_{o}_{g}" x="{ox}" y="{oy}" width="{c6_sz}" height="{c6_sz}" operator="arithmetic" k1="0" k2="1" k3="1" k4="{nz0_m3}" result="{nxt}"/>')
                     acc = nxt
             sl, ic = trip["rescale_slopes"], trip["rescale_intercepts"]
             p4.append(
@@ -647,10 +738,10 @@ def compile_compute_stages(spec: dict, dpr: int) -> List[str]:
         _emit_passthrough_merge(p4, s4_outs, keep_vram=True)
         out_filters.append(_wrap_filter(f"cnn-s4{part_sfx}-{dpr}x", p4))
 
-    # --- Stages 5a & 5b: DWConv3 -> VRAM_DW3 & DWConv4 -> VRAM_DW4 (4 groups/stage = 75 prims) ---
+    # --- Stages 5a, 5b, 5c: DWConv3 -> VRAM_DW3 & DWConv4 -> VRAM_DW4 (4 groups/stage = 75 prims) ---
     flts3 = layers["dwconv3"]["filters"]
     flts4 = layers["dwconv4"]["filters"]
-    for part_sfx, g_range in (("a", range(0, 4)), ("b", range(4, 8))):
+    for part_sfx, g_range in (("a", range(0, 4)), ("b", range(4, 8)), ("c", range(8, 12))):
         p5: List[str] = []
         s5_outs = []
         for g in g_range:
@@ -683,26 +774,29 @@ def compile_compute_stages(spec: dict, dpr: int) -> List[str]:
         _emit_passthrough_merge(p5, s5_outs, keep_vram=True)
         out_filters.append(_wrap_filter(f"cnn-s5{part_sfx}-{dpr}x", p5))
 
-    # --- Stages 6a & 6b: FC (24 -> 10, 2 triplets/stage = 56 prims) -> temp VRAM (260+5*o, 30) ---
+    # --- Stages 6a & 6b: FC (36 -> 10, 2 triplets/stage sharing fci_g = 68 prims) -> (FC_TMP_X0+5*o, 30) ---
     fc_trips = layers["fc"]["triplets"]
+    nz0_fc = _fmt_num(-float(layers["fc"].get("zero_point", 0.5)))
+    n_fc_groups = layers["fc"]["in_features"] // 3
     for part_sfx, trip_slice in (("a", fc_trips[:2]), ("b", fc_trips[2:])):
         p6ab: List[str] = [
             f'<feOffset in="SourceGraphic" dx="{-ANCHOR_MASK_X}" dy="{-ANCHOR_MASK_Y}" x="0" y="0" width="{c6_sz}" height="{c6_sz}" result="am6"/>'
         ]
+        for g in range(n_fc_groups):
+            gx, gy = VRAM_DW4[g]
+            p6ab.append(f'<feOffset in="SourceGraphic" dx="{-gx}" dy="{-gy}" x="0" y="0" width="{c6_sz}" height="{c6_sz}" result="fci_{g}"/>')
         outs6: List[str] = []
         for trip in trip_slice:
             o = trip["out_triplet"]
-            tx = 260 + 5 * o
+            tx = FC_TMP_X0 + 5 * o
             acc = ""
             for g, mat20 in enumerate(trip["color_matrices"]):
-                gx, gy = VRAM_DW4[g]
-                p6ab.append(f'<feOffset in="SourceGraphic" dx="{-gx}" dy="{-gy}" x="0" y="0" width="{c6_sz}" height="{c6_sz}" result="fci_{o}_{g}"/>')
-                p6ab.append(f'<feColorMatrix in="fci_{o}_{g}" x="0" y="0" width="{c6_sz}" height="{c6_sz}" type="matrix" values="{_fmt_list(mat20)}" result="fcp_{o}_{g}"/>')
+                p6ab.append(f'<feColorMatrix in="fci_{g}" x="0" y="0" width="{c6_sz}" height="{c6_sz}" type="matrix" values="{_fmt_list(mat20)}" result="fcp_{o}_{g}"/>')
                 if g == 0:
                     acc = f"fcp_{o}_{g}"
                 else:
                     nxt = f"fca_{o}_{g}"
-                    p6ab.append(f'<feComposite in="{acc}" in2="fcp_{o}_{g}" x="0" y="0" width="{c6_sz}" height="{c6_sz}" operator="arithmetic" k1="0" k2="1" k3="1" k4="-0.5" result="{nxt}"/>')
+                    p6ab.append(f'<feComposite in="{acc}" in2="fcp_{o}_{g}" x="0" y="0" width="{c6_sz}" height="{c6_sz}" operator="arithmetic" k1="0" k2="1" k3="1" k4="{nz0_fc}" result="{nxt}"/>')
                     acc = nxt
             p6ab.append(f'<feComposite in="{acc}" in2="am6" x="0" y="0" width="{c6_sz}" height="{c6_sz}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="fcm_{o}"/>')
             p6ab.append(f'<feMorphology in="fcm_{o}" x="0" y="0" width="{c6_sz}" height="{c6_sz}" operator="dilate" radius="2" result="fcd0_{o}"/>')
@@ -726,7 +820,7 @@ def compile_compute_stages(spec: dict, dpr: int) -> List[str]:
     strip_nodes = []
     for d in range(10):
         o, c_idx = d // 3, d % 3
-        tx = 260 + 5 * o
+        tx = FC_TMP_X0 + 5 * o
         p6c.append(f'<feColorMatrix in="SourceGraphic" x="{tx}" y="30" width="1" height="1" type="matrix" values="{ch_extract[c_idx]}" result="uch_{d}"/>')
         p6c.append(f'<feOffset in="uch_{d}" dx="{sx_pr + d - tx}" dy="{sy_pr - 30}" x="{sx_pr + d}" y="{sy_pr}" width="1" height="1" result="upx_{d}"/>')
         strip_nodes.append(f'<feMergeNode in="upx_{d}"/>')
@@ -762,7 +856,7 @@ def compile_compute_stages(spec: dict, dpr: int) -> List[str]:
     _emit_passthrough_merge(p6c, ["sm_pr", "sm_win", "sm_nwin"], keep_vram=True)
     out_filters.append(_wrap_filter(f"cnn-s6c-{dpr}x", p6c))
 
-    # --- Shared Softmax Bar Stages: visbarsa (digits 0..4 = 60 prims) & visbarsb (digits 5..9 = 60 prims) ---
+    # --- Shared Softmax Bar Stages: visbarsa (digits 0..4 = 61 prims) & visbarsb (digits 5..9 = 61 prims) ---
     h_part = 5 * BAR_ROW_H
     for part_sfx, d_range in (("a", range(0, 5)), ("b", range(5, 10))):
         pb: List[str] = []
@@ -795,7 +889,6 @@ def compile_compute_stages(spec: dict, dpr: int) -> List[str]:
         pb.append(f'<feMerge x="{BAR_X}" y="{y_top}" width="{BAR_W}" height="{h_part}" result="b_nwin">{"".join(bar_nwin_nodes)}</feMerge>')
         pb.append(f'<feMerge x="{BAR_X}" y="{y_top}" width="{BAR_W}" height="{h_part}" result="b_trk">{"".join(bar_trk_nodes)}</feMerge>')
 
-        # Clean 1-row tiled bright ramp (y=292 strip, [128..255] bright sRGB -> zero linear-light quantization or 2D gradient dither!)
         pb.append(f'<feOffset in="SourceGraphic" dx="0" dy="{y_top - 292}" x="{BAR_X}" y="{y_top}" width="{BAR_W}" height="1" result="bg_1r"/>')
         pb.append(f'<feTile in="bg_1r" x="{BAR_X}" y="{y_top}" width="{BAR_W}" height="{h_part}" result="bg_clean"/>')
         pb.append(f'<feComposite in="b_val" in2="bg_clean" x="{BAR_X}" y="{y_top}" width="{BAR_W}" height="{h_part}" operator="arithmetic" k1="0" k2="180" k3="361.42" k4="-361.32" result="b_mraw"/>')
@@ -806,21 +899,23 @@ def compile_compute_stages(spec: dict, dpr: int) -> List[str]:
         pb.append(f'<feColorMatrix in="m_oth" x="{BAR_X}" y="{y_top}" width="{BAR_W}" height="{h_part}" type="matrix" values="0.220 0 0 0 0 0 0.741 0 0 0 0 0 0.973 0 0 1 0 0 0 0" result="c_oth"/>')
         pb.append(f'<feMerge x="{BAR_LABEL_X - 12}" y="{y_top}" width="7" height="{h_part}" result="w_dotsr">{"".join(dot_nodes)}</feMerge>')
         pb.append(f'<feColorMatrix in="w_dotsr" x="{BAR_LABEL_X - 12}" y="{y_top}" width="7" height="{h_part}" type="matrix" values="0.204 0 0 0 0 0 0.827 0 0 0 0 0 0.600 0 0 1 0 0 0 0" result="w_dots"/>')
-        pb.append('<feOffset in="SourceGraphic" dx="0" dy="0" x="0" y="0" width="420" height="322" result="pass_l"/>')
+        # Preserve full 720x48 VRAM strip across visbarsa/visbarsb so DW2 (x=420..658) & SM strips stay intact!
+        pb.append(f'<feOffset in="SourceGraphic" dx="0" dy="0" x="0" y="0" width="{STAGE_W}" height="{VRAM_H}" result="vram_f"/>')
+        pb.append(f'<feOffset in="SourceGraphic" dx="0" dy="0" x="0" y="{VRAM_H}" width="420" height="{STAGE_H - VRAM_H}" result="pass_l"/>')
         if part_sfx == "a":
             pb.append(f'<feOffset in="SourceGraphic" dx="0" dy="0" x="{BAR_X}" y="292" width="{BAR_W}" height="4" result="pass_r"/>')
         else:
             pb.append(f'<feOffset in="SourceGraphic" dx="0" dy="0" x="420" y="{BAR_Y0}" width="270" height="{h_part}" result="pass_r"/>')
-        pb.append('<feMerge><feMergeNode in="pass_l"/><feMergeNode in="pass_r"/><feMergeNode in="b_trk"/><feMergeNode in="c_oth"/><feMergeNode in="c_win"/><feMergeNode in="w_dots"/></feMerge>')
+        pb.append('<feMerge><feMergeNode in="vram_f"/><feMergeNode in="pass_l"/><feMergeNode in="pass_r"/><feMergeNode in="b_trk"/><feMergeNode in="c_oth"/><feMergeNode in="c_win"/><feMergeNode in="w_dots"/></feMerge>')
         out_filters.append(_wrap_filter(f"cnn-visbars{part_sfx}-{dpr}x", pb))
 
     return out_filters
 
 
 def compile_visual_stage(layer_view: str, dpr: int) -> List[str]:
-    """Compile outermost layer-inspector visual filter(s) (`<= 69` prims each!).
-    Reads `x0` and the selected layer's RGB tiles from `SourceGraphic` while passing through
-    the rendered Softmax bars (`x=416..720, y=48..322`) and stripping off-screen VRAM/LUT helpers.
+    """Compile outermost layer-inspector visual filters (`visa`, `visb`, and `visc` for 3-row layers;
+    `<= 76` prims each!). Reads `x0` and the selected layer's RGB tiles from `SourceGraphic` while
+    passing through the rendered Softmax bars (`x=416..720, y=48..322`) and stripping off-screen helpers.
     """
     u = 1.0 if dpr == 1 else 0.5
     disp_scale = _fmt_num(230.0 * u)
@@ -831,13 +926,13 @@ def compile_visual_stage(layer_view: str, dpr: int) -> List[str]:
     iy_x, iy_y = IN_LUTY_POS
 
     lv_map = {k: (vslots, coords, src_box, n_rgb, layout) for k, _, _, vslots, coords, src_box, n_rgb, layout in LAYER_VIEWS}
-    vslots, coords, src_box, n_rgb, (cols, rows, cell_zoom, gap) = lv_map[layer_view]
+    vslots, coords, src_box, n_rgb, (cols, rows, cell_zoom, gap_x, gap_y) = lv_map[layer_view]
     tile_w = len(coords) * cell_zoom
     tile_h = len(coords) * cell_zoom
     t_sh_css = center_shift_css(tile_w, src_box, dpr)
     src_sz = int(src_box * u)
-    grid_w = cols * tile_w + (cols - 1) * gap
-    grid_h = rows * tile_h + (rows - 1) * gap
+    grid_w = cols * tile_w + (cols - 1) * gap_x
+    grid_h = rows * tile_h + (rows - 1) * gap_y
     start_x = ACT_PANEL_X + (ACT_PANEL_W - grid_w) // 2
     start_y = ACT_PANEL_Y + (ACT_PANEL_H - grid_h) // 2
     tlx_x, tlx_y = TILE_LUTX_POS
@@ -855,8 +950,8 @@ def compile_visual_stage(layer_view: str, dpr: int) -> List[str]:
         act_nodes: List[str] = []
         for g in g_range:
             col, row = g % cols, g // cols
-            tx = start_x + col * (tile_w + gap)
-            ty = start_y + row * (tile_h + gap)
+            tx = start_x + col * (tile_w + gap_x)
+            ty = start_y + row * (tile_h + gap_y)
             vx, vy = vslots[g]
             p.append(f'<feFlood x="{tx - 1}" y="{ty - 1}" width="{tile_w + 2}" height="{tile_h + 2}" flood-color="#26354d" flood-opacity="1" result="tbg_{g}"/>')
             p.append(f'<feFlood x="{tx}" y="{ty}" width="{tile_w}" height="{tile_h}" flood-color="#050811" flood-opacity="1" result="tfl_{g}"/>')
@@ -873,18 +968,7 @@ def compile_visual_stage(layer_view: str, dpr: int) -> List[str]:
             act_nodes.append(f'<feMergeNode in="tbg_{g}"/><feMergeNode in="tfl_{g}"/><feMergeNode in="atl_{g}"/>')
         return act_nodes
 
-    if layer_view not in SPLIT_VISUAL_LAYERS:
-        p_single: List[str] = []
-        _emit_input_preview(p_single)
-        nodes_all = _emit_tiles(p_single, range(n_rgb))
-        p_single.append(f'<feOffset in="SourceGraphic" dx="0" dy="0" x="416" y="{VRAM_H}" width="{STAGE_W - 416}" height="{STAGE_H - VRAM_H}" result="pass_bars"/>')
-        p_single.append(
-            '<feMerge><feMergeNode in="in_bg"/><feMergeNode in="vis_input"/>'
-            f'{"".join(nodes_all)}<feMergeNode in="pass_bars"/></feMerge>'
-        )
-        return [_wrap_filter(f"cnn-vis-{layer_view}-{dpr}x", p_single)]
-
-    # Split 2-row zoom layers into Row 0 (`visa`) + Row 1 (`visb`) so each filter stays <= 66 prims!
+    # Row 0 (`visa`): 5x input preview + Row 0 tiles over full passthrough
     pa: List[str] = []
     _emit_input_preview(pa)
     nodes_r0 = _emit_tiles(pa, range(0, cols))
@@ -894,16 +978,40 @@ def compile_visual_stage(layer_view: str, dpr: int) -> List[str]:
         f'{"".join(nodes_r0)}</feMerge>'
     )
 
-    pb_vis: List[str] = []
-    nodes_r1 = _emit_tiles(pb_vis, range(cols, n_rgb))
-    pb_vis.append(f'<feOffset in="SourceGraphic" dx="0" dy="0" x="{INPUT_PREVIEW_X}" y="{INPUT_PREVIEW_Y}" width="{INPUT_PREVIEW_SZ}" height="{INPUT_PREVIEW_SZ}" result="pass_in"/>')
-    pb_vis.append(f'<feOffset in="SourceGraphic" dx="0" dy="0" x="{ACT_PANEL_X}" y="{start_y - 2}" width="{ACT_PANEL_W}" height="{tile_h + 4}" result="pass_r0"/>')
-    pb_vis.append(f'<feOffset in="SourceGraphic" dx="0" dy="0" x="416" y="{VRAM_H}" width="{STAGE_W - 416}" height="{STAGE_H - VRAM_H}" result="pass_bars"/>')
-    pb_vis.append(
-        '<feMerge><feMergeNode in="pass_in"/><feMergeNode in="pass_r0"/>'
-        f'{"".join(nodes_r1)}<feMergeNode in="pass_bars"/></feMerge>'
+    if layer_view not in THREE_ROW_VISUAL_LAYERS:
+        # 2-row layers (`conv1`, `mix2`, `dwconv2`): `visb` renders Row 1 & strips VRAM/LUT helpers
+        pb_vis: List[str] = []
+        nodes_r1 = _emit_tiles(pb_vis, range(cols, n_rgb))
+        pb_vis.append(f'<feOffset in="SourceGraphic" dx="0" dy="0" x="{INPUT_PREVIEW_X}" y="{INPUT_PREVIEW_Y}" width="{INPUT_PREVIEW_SZ}" height="{INPUT_PREVIEW_SZ}" result="pass_in"/>')
+        pb_vis.append(f'<feOffset in="SourceGraphic" dx="0" dy="0" x="{ACT_PANEL_X - 2}" y="{start_y - 2}" width="{ACT_PANEL_W + 4}" height="{tile_h + 4}" result="pass_r0"/>')
+        pb_vis.append(f'<feOffset in="SourceGraphic" dx="0" dy="0" x="416" y="{VRAM_H}" width="{STAGE_W - 416}" height="{STAGE_H - VRAM_H}" result="pass_bars"/>')
+        pb_vis.append(
+            '<feMerge><feMergeNode in="pass_in"/><feMergeNode in="pass_r0"/>'
+            f'{"".join(nodes_r1)}<feMergeNode in="pass_bars"/></feMerge>'
+        )
+        return [
+            _wrap_filter(f"cnn-visa-{layer_view}-{dpr}x", pa),
+            _wrap_filter(f"cnn-visb-{layer_view}-{dpr}x", pb_vis),
+        ]
+
+    # 3-row layers (`mix3`, `dwconv3`, `dwconv4`): `visb` renders Row 1 over `pass_all`, `visc` renders Row 2 & strips helpers
+    pb_mid: List[str] = []
+    nodes_r1 = _emit_tiles(pb_mid, range(cols, 2 * cols))
+    pb_mid.append(f'<feOffset in="SourceGraphic" dx="0" dy="0" x="0" y="0" width="{STAGE_W}" height="{STAGE_H}" result="pass_all"/>')
+    pb_mid.append(f'<feMerge><feMergeNode in="pass_all"/>{"".join(nodes_r1)}</feMerge>')
+
+    pc_vis: List[str] = []
+    nodes_r2 = _emit_tiles(pc_vis, range(2 * cols, n_rgb))
+    r01_h = 2 * tile_h + gap_y + 4
+    pc_vis.append(f'<feOffset in="SourceGraphic" dx="0" dy="0" x="{INPUT_PREVIEW_X}" y="{INPUT_PREVIEW_Y}" width="{INPUT_PREVIEW_SZ}" height="{INPUT_PREVIEW_SZ}" result="pass_in"/>')
+    pc_vis.append(f'<feOffset in="SourceGraphic" dx="0" dy="0" x="{ACT_PANEL_X - 2}" y="{start_y - 2}" width="{ACT_PANEL_W + 4}" height="{r01_h}" result="pass_r01"/>')
+    pc_vis.append(f'<feOffset in="SourceGraphic" dx="0" dy="0" x="416" y="{VRAM_H}" width="{STAGE_W - 416}" height="{STAGE_H - VRAM_H}" result="pass_bars"/>')
+    pc_vis.append(
+        '<feMerge><feMergeNode in="pass_in"/><feMergeNode in="pass_r01"/>'
+        f'{"".join(nodes_r2)}<feMergeNode in="pass_bars"/></feMerge>'
     )
     return [
         _wrap_filter(f"cnn-visa-{layer_view}-{dpr}x", pa),
-        _wrap_filter(f"cnn-visb-{layer_view}-{dpr}x", pb_vis),
+        _wrap_filter(f"cnn-visb-{layer_view}-{dpr}x", pb_mid),
+        _wrap_filter(f"cnn-visc-{layer_view}-{dpr}x", pc_vis),
     ]
