@@ -1,0 +1,87 @@
+name: Deploy GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: python -m pip install --upgrade pip numpy pillow
+
+      - name: Run AES, Lisp, and CNN verification suites
+        run: |
+          python -m unittest discover -s aes -p "test_*.py"
+          python -m unittest discover -s lisp -p "test_*.py"
+          python -m unittest discover -s cnn -p "test_*.py"
+
+      - name: Stage static _site artifact and verify zero JavaScript
+        run: |
+          mkdir -p _site/aes _site/lisp _site/cnn
+          cp index.html _site/index.html
+          cp aes/index.html _site/aes/index.html
+          cp lisp/index.html _site/lisp/index.html
+          cp cnn/index.html _site/cnn/index.html
+          cp -R cnn/assets _site/cnn/assets
+          python - <<'PY'
+          from html.parser import HTMLParser
+          import pathlib
+          import sys
+
+          class ZeroJSAudit(HTMLParser):
+              def handle_starttag(self, tag, attrs):
+                  if tag.lower() == "script":
+                      sys.exit(f"Forbidden <script> tag found in {self.current_file}")
+                  for k, v in attrs:
+                      if k.lower().startswith("on"):
+                          sys.exit(f"Forbidden inline event handler {k} in {self.current_file}")
+                      if v and "javascript:" in v.lower():
+                          sys.exit(f"Forbidden javascript: URI in {self.current_file}")
+
+          html_files = sorted(pathlib.Path("_site").rglob("*.html"))
+          assert len(html_files) == 4, f"Expected 4 HTML files in _site, got {len(html_files)}"
+          for path in html_files:
+              auditor = ZeroJSAudit()
+              auditor.current_file = str(path)
+              auditor.feed(path.read_text(encoding="utf-8"))
+              print(f"Verified zero-JS: {path} ({path.stat().st_size / 1024:.1f} KB)")
+          PY
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

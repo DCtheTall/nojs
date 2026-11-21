@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>No JavaScript, Just Vibes — Pure HTML + CSS Web Demos</title>
+<meta name="description" content="Interactive cryptography, programming language, and neural network demos running strictly in HTML and CSS with zero JavaScript.">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  background:#0b0f17;color:#e2e8f0;line-height:1.55;padding:2.5rem 1rem 4.5rem;
+  min-height:100vh
+}
+.hub{max-width:980px;margin:0 auto;display:flex;flex-direction:column;gap:1.75rem}
+
+header.hero{
+  border:1px solid #1e293b;background:linear-gradient(180deg,#111827,#0f172a);
+  border-radius:16px;padding:1.85rem 2rem;box-shadow:0 14px 36px rgba(0,0,0,.38)
+}
+.hero-top{
+  display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.75rem;
+  margin-bottom:.85rem
+}
+.badge-row{display:flex;flex-wrap:wrap;gap:.45rem}
+.badge{
+  font-size:.71rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
+  padding:.22rem .58rem;border-radius:999px;background:#1e293b;color:#38bdf8;border:1px solid #334155
+}
+.badge.green{color:#4ade80;border-color:#14532d;background:#052e16}
+.badge.purple{color:#c084fc;border-color:#4c1d95;background:#1e1035}
+.badge.amber{color:#fbbf24;border-color:#78350f;background:#271705}
+
+.repo-link{
+  display:inline-flex;align-items:center;gap:.4rem;font-size:.8rem;font-weight:600;
+  color:#cbd5e1;text-decoration:none;padding:.32rem .78rem;border-radius:999px;
+  background:#0b1120;border:1px solid #334155;transition:color .14s,border-color .14s,background .14s
+}
+.repo-link:hover{color:#38bdf8;border-color:#38bdf8;background:#0f1d32}
+
+header.hero h1{font-size:2rem;font-weight:800;color:#f8fafc;letter-spacing:-.025em}
+header.hero p{margin-top:.55rem;color:#94a3b8;font-size:.98rem;max-width:74ch}
+code{
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  color:#e2e8f0;background:#1e293b;padding:.1rem .35rem;border-radius:4px;font-size:.86em
+}
+
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(285px,1fr));gap:1.15rem}
+.card{
+  display:flex;flex-direction:column;justify-content:space-between;gap:1.15rem;
+  border:1px solid #1e293b;background:#111827;border-radius:14px;padding:1.4rem 1.5rem;
+  text-decoration:none;color:inherit;box-shadow:0 8px 24px rgba(0,0,0,.25);
+  transition:transform .15s ease,border-color .15s ease,box-shadow .15s ease,background .15s ease
+}
+.card:hover{
+  transform:translateY(-2px);border-color:#38bdf8;background:#131c2e;
+  box-shadow:0 14px 32px rgba(0,0,0,.38),0 0 0 1px rgba(56,189,248,.22)
+}
+.card:focus-visible{
+  outline:none;border-color:#38bdf8;box-shadow:0 0 0 2px rgba(56,189,248,.4)
+}
+.card-top{display:flex;flex-direction:column;gap:.65rem}
+.card-meta{display:flex;justify-content:space-between;align-items:center;gap:.5rem}
+.card-path{
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.76rem;font-weight:600;
+  color:#7dd3fc;background:#090d16;border:1px solid #1e293b;padding:.15rem .5rem;border-radius:6px
+}
+.card-size{
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.72rem;color:#64748b
+}
+.card h2{font-size:1.22rem;font-weight:700;color:#f8fafc;letter-spacing:-.015em}
+.card p{font-size:.88rem;color:#94a3b8}
+
+.spec-list{
+  list-style:none;display:flex;flex-direction:column;gap:.42rem;
+  padding-top:.75rem;border-top:1px solid #1e293b;font-size:.81rem;color:#cbd5e1
+}
+.spec-list li{position:relative;padding-left:1.05rem;line-height:1.45}
+.spec-list li::before{content:"▹";position:absolute;left:0;top:0;color:#38bdf8;font-size:.78rem}
+
+.card-cta{
+  display:flex;justify-content:space-between;align-items:center;
+  padding:.58rem .8rem;border-radius:9px;background:#090d16;border:1px solid #1e293b;
+  font-size:.82rem;font-weight:700;color:#38bdf8;transition:background .15s,border-color .15s
+}
+.card:hover .card-cta{background:#0c2136;border-color:#38bdf8;color:#7dd3fc}
+
+footer.foot{
+  display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.75rem;
+  padding:1rem 1.25rem;border-radius:12px;border:1px solid #1e293b;background:#0e1420;
+  font-size:.81rem;color:#64748b
+}
+footer.foot a{color:#94a3b8;text-decoration:none;border-bottom:1px dotted #475569}
+footer.foot a:hover{color:#38bdf8;border-bottom-color:#38bdf8}
+</style>
+</head>
+<body>
+<main class="hub">
+  <header class="hero">
+    <div class="hero-top">
+      <div class="badge-row">
+        <span class="badge green">0 Bytes JavaScript</span>
+        <span class="badge">Pure HTML5 + CSS</span>
+        <span class="badge purple">Static Single-File Circuits</span>
+      </div>
+      <a class="repo-link" href="https://github.com/DCtheTall/nojs">GitHub Repository &nearr;</a>
+    </div>
+    <h1>No JavaScript, Just Vibes</h1>
+    <p>
+      A collection of interactive web applications that run <strong>entirely inside the browser's HTML, CSS cascade, and SVG filter engines</strong> with zero JavaScript. Every demo is compiled by Python into static markup.
+    </p>
+  </header>
+
+  <section class="cards" aria-label="Interactive Demos">
+    <a class="card" href="./aes/">
+      <div class="card-top">
+        <div class="card-meta">
+          <span class="card-path">aes/</span>
+          <span class="card-size">~164 KB · 0 JS · 0 SVG</span>
+        </div>
+        <h2>AES-128 Block Cipher</h2>
+        <p>Full 10-round 128-bit NIST FIPS-197 AES encryption and key schedule executed strictly inside CSS style recalculation.</p>
+        <ul class="spec-list">
+          <li>Interactive 16-byte ASCII plaintext &amp; 8-bit key switch bank</li>
+          <li>NIST FIPS-197 Appendix B test vector toggle</li>
+          <li>Reusable <code>SubWord</code> + GF(2) ANF <code>mod(..., 2)</code> gates</li>
+          <li>Live 10-round state matrix, hex trace &amp; 128-bit LEDs</li>
+        </ul>
+      </div>
+      <span class="card-cta"><span>Launch AES-128 Cipher</span><span>&rarr;</span></span>
+    </a>
+
+    <a class="card" href="./lisp/">
+      <div class="card-top">
+        <div class="card-meta">
+          <span class="card-path">lisp/</span>
+          <span class="card-size">~1.0 MB · 0 JS · 0 SVG</span>
+        </div>
+        <h2>Lisp S-Expression Interpreter</h2>
+        <p>Live S-expression lexer, parenthesis matcher, and 92-tick CEK virtual machine implemented with CSS <code>@property</code> integer wires.</p>
+        <ul class="spec-list">
+          <li>40-slot token composer &amp; 64-char raw ASCII source editor</li>
+          <li>Lexical <code>let</code> bindings &amp; mutable <code>set</code> environments</li>
+          <li>Higher-order lambdas (<code>fn</code>) &amp; recursive functions (<code>fact</code>, <code>fib</code>, <code>gcd</code>)</li>
+          <li>Live per-tick VM register &amp; continuation stack inspector</li>
+        </ul>
+      </div>
+      <span class="card-cta"><span>Launch Lisp Interpreter</span><span>&rarr;</span></span>
+    </a>
+
+    <a class="card" href="./cnn/">
+      <div class="card-top">
+        <div class="card-meta">
+          <span class="card-path">cnn/</span>
+          <span class="card-size">~466 KB + PNG LUTs · 0 JS</span>
+        </div>
+        <h2>MNIST Convolutional Neural Net</h2>
+        <p>Real 1,771-parameter trained CNN running GPU-accelerated digit OCR across nested HTML5 SVG <code>&lt;feConvolveMatrix&gt;</code> filter stages.</p>
+        <ul class="spec-list">
+          <li>Drag-and-drop, paste, or type into a <code>contenteditable</code> OCR slot</li>
+          <li>&gt;95% exact 8-bit SVG test accuracy on unseen MNIST digits</li>
+          <li>Auto grayscale &amp; light-paper polarity normalization</li>
+          <li>Interactive RGB convolutional feature-map inspector &amp; Softmax bars</li>
+        </ul>
+      </div>
+      <span class="card-cta"><span>Launch MNIST CNN OCR</span><span>&rarr;</span></span>
+    </a>
+  </section>
+
+  <footer class="foot">
+    <span>Built with Python circuit/VM/SVG compilers &mdash; <code>&lt;script&gt;</code> count: <strong>0</strong>.</span>
+    <span>Source &amp; generators on <a href="https://github.com/DCtheTall/nojs">github.com/DCtheTall/nojs</a></span>
+  </footer>
+</main>
+</body>
+</html>

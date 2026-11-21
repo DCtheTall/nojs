@@ -221,6 +221,13 @@ header.hero{{
   border:1px solid #1e293b;background:linear-gradient(180deg,#111827,#0f172a);
   border-radius:14px;padding:1.2rem 1.45rem;box-shadow:0 12px 32px rgba(0,0,0,.35)
 }}
+.back-row{{margin-bottom:.6rem}}
+.back-link{{
+  display:inline-flex;align-items:center;gap:.35rem;font-size:.74rem;font-weight:600;
+  color:#94a3b8;text-decoration:none;padding:.2rem .58rem;border-radius:999px;
+  background:#0b1120;border:1px solid #1e293b;transition:color .14s,border-color .14s,background .14s
+}}
+.back-link:hover{{color:#38bdf8;border-color:#38bdf8;background:#0f1d32}}
 .badge-row{{display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:.55rem}}
 .badge{{
   font-size:.68rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
@@ -482,6 +489,9 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
 
 <main class="cnn-app">
   <header class="hero">
+    <nav class="back-row" aria-label="Site navigation">
+      <a class="back-link" href="../">&larr; All NoJS Demos</a>
+    </nav>
     <div class="badge-row">
       <span class="badge green">Zero JavaScript</span>
       <span class="badge">SVG feConvolveMatrix</span>

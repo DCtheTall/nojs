@@ -122,6 +122,13 @@ header.hero{
   border:1px solid #1e293b;background:linear-gradient(180deg,#111827,#0f172a);
   border-radius:14px;padding:1.45rem 1.7rem;box-shadow:0 12px 32px rgba(0,0,0,.35)
 }
+.back-row{margin-bottom:.7rem}
+.back-link{
+  display:inline-flex;align-items:center;gap:.35rem;font-size:.76rem;font-weight:600;
+  color:#94a3b8;text-decoration:none;padding:.22rem .62rem;border-radius:999px;
+  background:#0b1120;border:1px solid #1e293b;transition:color .14s,border-color .14s,background .14s
+}
+.back-link:hover{color:#38bdf8;border-color:#38bdf8;background:#0f1d32}
 .badge-row{display:flex;flex-wrap:wrap;gap:.5rem;margin-bottom:.65rem}
 .badge{
   font-size:.71rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
@@ -616,6 +623,9 @@ select.cc:focus{outline:none;border-color:#38bdf8;background:#0c2438;box-shadow:
         "<title>NoJS Lisp — Pure HTML + Inline CSS S-Expression Interpreter</title>\n"
         f"<style>{''.join(css)}</style>\n</head>\n<body>\n<main class=lisp-app>\n"
         "<header class=hero>"
+        "<nav class=back-row aria-label='Site navigation'>"
+        "<a class=back-link href='../'>&larr; All NoJS Demos</a>"
+        "</nav>"
         "<div class=badge-row>"
         "<span class='badge green'>0 Bytes JavaScript</span>"
         "<span class=badge>0 SVG Filters / 0 SMIL</span>"
