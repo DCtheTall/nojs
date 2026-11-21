@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>No JavaScript, Just Vibes — Pure HTML + CSS Web Demos</title>
-<meta name="description" content="Interactive cryptography, programming language, and neural network demos running strictly in HTML and CSS with zero JavaScript.">
+<meta name="description" content="Interactive cryptography, programming language, neural network, and chess demos running strictly in HTML and CSS with zero JavaScript.">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{
@@ -45,7 +45,8 @@ code{
   color:#e2e8f0;background:#1e293b;padding:.1rem .35rem;border-radius:4px;font-size:.86em
 }
 
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(285px,1fr));gap:1.15rem}
+.cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1.15rem}
+@media (max-width:680px){.cards{grid-template-columns:1fr}}
 .card{
   display:flex;flex-direction:column;justify-content:space-between;gap:1.15rem;
   border:1px solid #1e293b;background:#111827;border-radius:14px;padding:1.4rem 1.5rem;
@@ -164,6 +165,24 @@ footer.foot a:hover{color:#38bdf8;border-bottom-color:#38bdf8}
         </ul>
       </div>
       <span class="card-cta"><span>Launch MNIST CNN OCR</span><span>&rarr;</span></span>
+    </a>
+
+    <a class="card" href="./chess/">
+      <div class="card-top">
+        <div class="card-meta">
+          <span class="card-path">chess/</span>
+          <span class="card-size">~2.3 MB · 0 JS · 0 SVG</span>
+        </div>
+        <h2>2-Player FIDE Chess</h2>
+        <p>Full 2-player chess referee and board engine executing ray-cast pins, checks, castling, en passant, promotions, checkmate, and stalemate in CSS.</p>
+        <ul class="spec-list">
+          <li>Radix-3 Kogge-Stone 8-ray pin, X-ray King &amp; double-check filter</li>
+          <li>Castling transit checks, horizontal EP pins &amp; underpromotions</li>
+          <li>Checkmate, stalemate, insufficient material &amp; 50-move rule</li>
+          <li>100-ply move history with LIFO undo, board flip &amp; tactical presets</li>
+        </ul>
+      </div>
+      <span class="card-cta"><span>Launch 2-Player Chess</span><span>&rarr;</span></span>
     </a>
   </section>
 

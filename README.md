@@ -29,3 +29,9 @@ All projects include Python code which generate the relevant HTML and CSS.
 - GPU acceleration using HTML5 SVG
 - Over 95% accuracy in bit-for-bit simulation on MNIST test set
 - Renders latent activations using interactable UI
+
+### [Chess](https://dcthetall.github.io/nojs/chess/) [`chess/`](chess/)
+
+- Full 2-player FIDE chess rules with strict legal-move enforcement
+- Evaluates pins, checks, castling, en passant, promotions, checkmate, and stalemate
+- Supports undo, board flip, and preset tactical positions

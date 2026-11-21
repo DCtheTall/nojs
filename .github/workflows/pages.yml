@@ -27,22 +27,24 @@ jobs:
           python-version: "3.12"
 
       - name: Install test dependencies
-        run: python -m pip install --upgrade pip numpy pillow
+        run: python -m pip install --upgrade pip numpy pillow chess
 
-      - name: Run AES, Lisp, and CNN verification suites
+      - name: Run AES, Lisp, CNN, and Chess verification suites
         run: |
           python -m unittest discover -s aes -p "test_*.py"
           python -m unittest discover -s lisp -p "test_*.py"
           python -m unittest discover -s cnn -p "test_*.py"
+          python -m unittest discover -s chess -p "test_*.py"
 
       - name: Stage static _site artifact and verify zero JavaScript
         run: |
-          mkdir -p _site/aes _site/lisp _site/cnn
+          mkdir -p _site/aes _site/lisp _site/cnn _site/chess
           cp index.html _site/index.html
           cp aes/index.html _site/aes/index.html
           cp lisp/index.html _site/lisp/index.html
           cp cnn/index.html _site/cnn/index.html
           cp -R cnn/assets _site/cnn/assets
+          cp chess/index.html _site/chess/index.html
           python - <<'PY'
           from html.parser import HTMLParser
           import pathlib
@@ -59,7 +61,7 @@ jobs:
                           sys.exit(f"Forbidden javascript: URI in {self.current_file}")
 
           html_files = sorted(pathlib.Path("_site").rglob("*.html"))
-          assert len(html_files) == 4, f"Expected 4 HTML files in _site, got {len(html_files)}"
+          assert len(html_files) == 5, f"Expected 5 HTML files in _site, got {len(html_files)}"
           for path in html_files:
               auditor = ZeroJSAudit()
               auditor.current_file = str(path)
