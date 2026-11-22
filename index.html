@@ -171,14 +171,14 @@ footer.foot a:hover{color:#38bdf8;border-bottom-color:#38bdf8}
       <div class="card-top">
         <div class="card-meta">
           <span class="card-path">chess/</span>
-          <span class="card-size">~4.2 MB + PNG LUTs · 0 JS</span>
+          <span class="card-size">~4.1 MB + PNG LUTs · 0 JS</span>
         </div>
-        <h2>FIDE Chess &amp; SVG 2-Ply CNN AI</h2>
-        <p>Full 1P/2P FIDE chess referee in CSS paired with an HTML5 SVG <code>&lt;filter&gt;</code> 2-ply Minimax AI guided by a 2,623-param Stockfish-distilled CNN (<code>6&rarr;18 5&times;5&rarr;27 3&times;3&rarr;36 2&times;2 + 3-ch skip</code>).</p>
+        <h2>FIDE Chess &amp; SVG 2-Ply + Q3 CNN AI</h2>
+        <p>Full 1P/2P FIDE chess referee in CSS paired with an HTML5 SVG <code>&lt;filter&gt;</code> 2-ply + Ply-3 Quiescence Minimax AI guided by a 2,623-param Stockfish-distilled CNN (<code>6&rarr;18 5&times;5&rarr;27 3&times;3&rarr;36 2&times;2 + 3-ch skip</code>).</p>
         <ul class="spec-list">
           <li>1P vs SVG AI (White/Black) + 2P Pass &amp; Play with LIFO undo</li>
           <li>2,623-param 8-bit CNN (5&times;5 Knight-vision, <code>r = 0.919</code>, 96.1% rank acc)</li>
-          <li>Parallel GPU search over 1,024 depth-2 leaves + exact mate check</li>
+          <li>Parallel GPU search over 1,024 leaves + mate check &amp; Ply-3 Quiescence</li>
           <li>Exact pins, X-ray King checks, castling, EP, mate &amp; stalemate</li>
         </ul>
       </div>

@@ -72,6 +72,7 @@ class _DOMAuditor(HTMLParser):
         super().__init__()
         self.stack: List[str] = []
         self.max_depth = 0
+        self.elem_count = 0
         self.tags_seen: Set[str] = set()
         self.event_attrs: List[str] = []
         self.js_uris: List[str] = []
@@ -79,6 +80,7 @@ class _DOMAuditor(HTMLParser):
 
     def handle_starttag(self, tag: str, attrs: List[Tuple[str, Optional[str]]]) -> None:
         t = tag.lower()
+        self.elem_count += 1
         self.tags_seen.add(t)
         attr_dict = {k.lower(): (v or "") for k, v in attrs}
         if t == "a" and attr_dict.get("href") == "../" and "back-link" in attr_dict.get("class", ""):
@@ -131,10 +133,11 @@ class TestNoJSChess(unittest.TestCase):
             ref_by_from[mv.from_sq].add(mv.to_sq)
 
         for u in range(64):
+            exp_sel = 0 if ref_ev.is_terminal else ref_ev.has_leg[u]
             self.assertEqual(
-                env[f"--has_leg_{u}"],
-                ref_ev.has_leg[u],
-                f"has_leg_{u} ({cr.sq_name(u)}) mismatch on {fen}",
+                env[f"--can_sel_{u}"],
+                exp_sel,
+                f"can_sel_{u} ({cr.sq_name(u)}) mismatch on {fen}",
             )
 
         if PYCHESS is not None:
@@ -224,9 +227,9 @@ class TestNoJSChess(unittest.TestCase):
         env_dc = self._assert_matches_oracles(dbl_chk_fen)
         self.assertEqual(env_dc["--num_checkers"], 2)
         #Neither Black Queen d5 (which could capture Rd8 or Nf6 individually!) nor Re4 may move in double check!
-        self.assertEqual(env_dc[f"--has_leg_{cr.parse_sq('d5')}"], 0)
-        self.assertEqual(env_dc[f"--has_leg_{cr.parse_sq('e4')}"], 0)
-        self.assertEqual(env_dc[f"--has_leg_{cr.parse_sq('e8')}"], 1)  # Kf7 legal
+        self.assertEqual(env_dc[f"--can_sel_{cr.parse_sq('d5')}"], 0)
+        self.assertEqual(env_dc[f"--can_sel_{cr.parse_sq('e4')}"], 0)
+        self.assertEqual(env_dc[f"--can_sel_{cr.parse_sq('e8')}"], 1)  # Kf7 legal
 
         # 3. King X-ray retreat along checking slider ray forbidden (Ke2 checked by Re8 cannot step to e1!)
         xray_fen = "4r2k/8/8/8/8/8/4K3/8 w - - 0 1"
@@ -445,36 +448,64 @@ class TestNoJSChess(unittest.TestCase):
             "Safari/WebKit isolates ::after counters when contain:style is set on counter-reset elements",
         )
         self.assertNotIn(
-            ":has(input:checked)",
+            ":has(",
             raw,
-            "Subject-level :has(input:checked) fails to invalidate on radio uncheck in WebKit",
+            "All :has(...) selectors must be eliminated in favor of O(1) top-level sibling combinators",
+        )
+        self.assertLessEqual(
+            len(self.spec.registered_props),
+            2850,
+            f"Registered @property count {len(self.spec.registered_props)} regressed above 2,850 budget",
+        )
+        self.assertLessEqual(
+            auditor.elem_count,
+            34500,
+            f"Total HTML/SVG element count {auditor.elem_count} regressed above 34,500 budget",
         )
         self.assertIn(
             ".ai-src-wrap i,.ai-meta{background:rgb(var(--g),var(--g),var(--g))}",
             raw,
             "<foreignObject> pixels must be strictly neutral gray (R==G==B) for Display-P3 immunity",
         )
+        self.assertIn(
+            "@media (-webkit-min-device-pixel-ratio:2.5),(min-resolution:2.5dppx)",
+            raw,
+            "Missing 3x DPR iPhone / mobile scaling media query",
+        )
+        self.assertIn(
+            "#mode-1pw:checked~#ai-hint:not(:checked)~#mv #t0n:checked~.arena .ai-fstage",
+            raw,
+            "Missing Human-turn SVG filter pause rule for initial page load & Human clicks",
+        )
 
         # Audit all compiled 1x & 2x SVG <filter> graphs and Display-P3/linearRGB lossless PNG LUTs
         w_spec = svg_ai.load_weights()
         stage_ids = svg_ai.get_compute_stage_ids(w_spec)
+        self.assertLessEqual(len(stage_ids), 58)
         for dpr in (1, 2):
             flts = svg_ai.compile_chess_ai_filters(w_spec, dpr)
             self.assertEqual(len(flts), len(stage_ids))
             for sid, fxml in zip(stage_ids, flts):
                 root = ET.fromstring(fxml)
+                fw, fh = float(root.attrib["width"]), float(root.attrib["height"])
+                if sid in ("visa", "visb"):
+                    self.assertEqual((fw, fh), (float(svg_ai.STAGE_W), float(svg_ai.STAGE_H)))
+                else:
+                    self.assertEqual((fw, fh), (svg_ai.STAGE_W / dpr, svg_ai.COMP_H / dpr))
                 prims = list(root)
                 self.assertLessEqual(len(prims), 74, f"{sid} {dpr}x exceeds 74-primitive budget ({len(prims)})")
                 defined = {"SourceGraphic"}
-                for pr in prims:
+                nodes_dag: Dict[str, List[str]] = {}
+                last_r = "SourceGraphic"
+                for p_idx, pr in enumerate(prims):
                     self.assertNotEqual(pr.tag, "feImage")
                     if "x" in pr.attrib:
                         px, py = float(pr.attrib["x"]), float(pr.attrib["y"])
                         pw, ph = float(pr.attrib["width"]), float(pr.attrib["height"])
                         self.assertGreaterEqual(px, 0.0)
                         self.assertGreaterEqual(py, 0.0)
-                        self.assertLessEqual(px + pw, svg_ai.STAGE_W)
-                        self.assertLessEqual(py + ph, svg_ai.STAGE_H)
+                        self.assertLessEqual(px + pw, fw, f"{sid} {dpr}x prim x+w={px+pw} > {fw}")
+                        self.assertLessEqual(py + ph, fh, f"{sid} {dpr}x prim y+h={py+ph} > {fh}")
                     if pr.tag == "feConvolveMatrix":
                         ords = [int(x) for x in pr.attrib["order"].split()]
                         self.assertTrue(all(o <= 5 for o in ords), f"Kernel > 5x5 in {sid}: {ords}")
@@ -484,13 +515,32 @@ class TestNoJSChess(unittest.TestCase):
                     if pr.tag == "feMerge":
                         for mn in pr:
                             self.assertIn(mn.attrib["in"], defined)
+                        ins = [mn.attrib["in"] for mn in pr]
                     else:
+                        ins = []
                         if "in" in pr.attrib:
                             self.assertIn(pr.attrib["in"], defined)
+                            ins.append(pr.attrib["in"])
                         if "in2" in pr.attrib:
                             self.assertIn(pr.attrib["in2"], defined)
+                            ins.append(pr.attrib["in2"])
+                    r_key = pr.attrib.get("result", f"__p{p_idx}")
+                    nodes_dag[r_key] = ins
+                    last_r = r_key
                     if "result" in pr.attrib:
                         defined.add(pr.attrib["result"])
+
+                # Guard against unmemoized Skia SkImageFilter::onFilterBounds diamond-chain blowup in Chrome!
+                memo_walks: Dict[str, int] = {"SourceGraphic": 1}
+                def _count_walks(nm: str) -> int:
+                    if nm not in memo_walks:
+                        memo_walks[nm] = 1 + sum(_count_walks(ch) for ch in nodes_dag.get(nm, []))
+                    return memo_walks[nm]
+                self.assertLessEqual(
+                    _count_walks(last_r),
+                    12000,
+                    f"Skia DAG tree-walk blowup in {sid} ({dpr}x): {_count_walks(last_r)} > 12,000",
+                )
 
         assets_dir = os.path.join(CHESS_DIR, "assets")
         pngs = [fn for fn in os.listdir(assets_dir) if fn.endswith(".png")]
@@ -741,6 +791,73 @@ class TestSVG2PlyCNN(unittest.TestCase):
         self.assertIn(best_uci, {"d5c5", "d5d8", "d5d6", "d5a5"}, f"Expected safe Qd5 retreat, got {best_uci}")
         self.assertLessEqual(int(res7.q_scores_u8[45]), 45, f"Qxf3?? (v1=45) must score <= 45, got {res7.q_scores_u8[45]}")
         self.assertGreaterEqual(int(res7.best_score_u8), 115)
+
+    def test_07_ply3_quiescence_fide_legality_and_tactical_horizon(self) -> None:
+        """Verify Ply-3 Quiescence (`s2q0..s2q7`) produces 100% FIDE-legal captures across random
+        & tactical boards (including pins, single/double checks, King X-rays & promo-captures) and
+        resolves 3-ply royal forks (`Nc7+ Kd8 Nxa8!`) and defended-piece recaptures.
+        """
+        import numpy as np
+
+        sids = self.svg_ai.get_compute_stage_ids(self.w_spec)
+        for q_sid in ("s2q0", "s2q1", "s2q2", "s2q3", "s2q4", "s2q5", "s2q6", "s2q7"):
+            self.assertIn(q_sid, sids)
+
+        if PYCHESS is not None:
+            rng = random.Random(2026)
+            bd = PYCHESS.Board()
+            checked = 0
+            selected = 0
+            while checked < 2500:
+                if bd.is_game_over() or bd.fullmove_number > 60:
+                    bd = PYCHESS.Board()
+                mvs = list(bd.legal_moves)
+                if not mvs:
+                    bd = PYCHESS.Board()
+                    continue
+                bd.push(rng.choice(mvs))
+                if bd.is_checkmate():
+                    continue
+                s2_u8 = np.full((6, 8, 8), 128, dtype=np.uint8)
+                stm = bd.turn
+                for sq, pc in bd.piece_map().items():
+                    r, f = divmod(sq, 8)
+                    ay = r if stm == PYCHESS.WHITE else (7 - r)
+                    s2_u8[pc.piece_type - 1, ay, f] = 255 if pc.color == stm else 1
+                _, sel = self.svg_ai._select_and_apply_ply3_quiescence_8x8(s2_u8)
+                checked += 1
+                if sel is not None:
+                    u3, v3, _pl, _tr = sel
+                    ur = u3 if stm == PYCHESS.WHITE else (8 * (7 - (u3 // 8)) + (u3 % 8))
+                    vr = v3 if stm == PYCHESS.WHITE else (8 * (7 - (v3 // 8)) + (v3 % 8))
+                    pc_u = bd.piece_at(ur)
+                    self.assertIsNotNone(pc_u)
+                    promo = PYCHESS.QUEEN if (pc_u.piece_type == PYCHESS.PAWN and PYCHESS.square_rank(vr) in (0, 7)) else None
+                    cmv = PYCHESS.Move(ur, vr, promotion=promo)
+                    self.assertIn(cmv, bd.legal_moves, f"Illegal Ply-3 move {cmv} in {bd.fen()}")
+                    self.assertTrue(bd.is_capture(cmv))
+                    selected += 1
+            self.assertGreater(selected, 1000)
+
+        # 1. 3-Ply Royal Fork: 1. Nc7+ Ke7/Kd8 2. Nxa8! (missed at pure 2-ply, found at 2-ply + Q3!)
+        fork_env = simulate_css_chess(
+            self.css_spec,
+            initial_fen="r1b1kbnr/pp3ppp/2n1p3/1N1p2q1/8/8/PPPPPPPP/R1BQKBNR w KQkq - 0 5",
+            fast_stages=self.fast,
+        )
+        res_fork = self.svg_ai.simulate_svg_2ply_cnn(fork_env, self.w_spec)
+        self.assertEqual(cr.sq_name(res_fork.best_u_real) + cr.sq_name(res_fork.best_v_real), "b5c7")
+        self.assertGreaterEqual(int(res_fork.best_score_u8), 200)
+
+        # 2. 3-Ply Winning Exchange: 1. Nxd5 exd5 2. Bxd5! (+1 pawn after Ply-3 recapture)
+        combo_env = simulate_css_chess(
+            self.css_spec,
+            initial_fen="r2qkb1r/pppb1ppp/4p1n1/3n4/2B5/2N5/PPPPPPPP/R1BQK1NR w KQkq - 0 6",
+            fast_stages=self.fast,
+        )
+        res_combo = self.svg_ai.simulate_svg_2ply_cnn(combo_env, self.w_spec)
+        self.assertEqual(cr.sq_name(res_combo.best_u_real) + cr.sq_name(res_combo.best_v_real), "c3d5")
+        self.assertGreaterEqual(int(res_combo.best_score_u8), 155)
 
 
 if __name__ == "__main__":

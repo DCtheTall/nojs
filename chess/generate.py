@@ -36,6 +36,7 @@ from css_chess import (
 )
 from svg_ai import (
     ASSETS_DIR,
+    COMP_H,
     FO_H,
     FO_W,
     FO_X,
@@ -95,12 +96,14 @@ def minify_ui_css(raw: str) -> str:
     return s.replace(";}", "}").strip()
 
 
-def _chan_b_expr(role_sfx: str, sq_w: int, sq_b: int) -> str:
+def _chan_b_expr(pt_code: int, sq_w: int, sq_b: int) -> str:
     """Lossless `{0, 128, 255}` CSS channel formula for AI-normalized square `(ax, ay)`:
     `0` = Opponent piece (`s1a` maps `0 -> 1/255`), `128` = Empty (`Z0`), `255` = AI piece!
     """
-    dw = f"(var(--own_{role_sfx}{sq_w}) - var(--opp_{role_sfx}{sq_w}))"
-    db = f"(var(--own_{role_sfx}{sq_b}) - var(--opp_{role_sfx}{sq_b}))"
+    bw = f"var(--b{sq_w})"
+    bb = f"var(--b{sq_b})"
+    dw = f"({css_eq(bw, pt_code)} - {css_eq(bw, pt_code + 8)})"
+    db = f"({css_eq(bb, pt_code + 8)} - {css_eq(bb, pt_code)})"
     return f"calc(128 + 128*((1 - var(--turn))*{dw} + var(--turn)*{db}))"
 
 
@@ -145,6 +148,7 @@ def generate_html(max_plies: int = DEFAULT_MAX_PLIES, weights_path: str = WEIGHT
     # -----------------------------------------------------------------------
     # B. UI Theme, Board, Controls & Fixed-1:1 SVG AI Stage Styling
     # -----------------------------------------------------------------------
+    STAGE_VIEW_W = 666  # Exact multiple of 3 (666 * 2/3 = 444px, 636 * 2/3 = 424px) for 0-error 3x DPR scaling!
     ui_css = f"""
 *{{box-sizing:border-box;margin:0;padding:0}}
 body{{
@@ -152,12 +156,9 @@ body{{
   background:#0b0f17;color:#e2e8f0;line-height:1.5;padding:1.45rem .9rem 3.8rem;min-height:100vh
 }}
 .chess-app{{
-  --ai_side:1;--ai_en:1;--ai_peek:0;
   max-width:1244px;margin:0 auto;display:flex;flex-direction:column;gap:1.15rem
 }}
-.chess-app:has(#mode-1pb:checked){{--ai_side:0;--ai_en:1}}
-.chess-app:has(#mode-2p:checked){{--ai_en:0}}
-.chess-app:has(#ai-hint:checked){{--ai_peek:1}}
+.top-inp{{display:none}}
 
 header.hero{{
   border:1px solid #1e293b;background:linear-gradient(180deg,#111827,#0f172a);
@@ -204,8 +205,15 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
   background:#090d16;border:1px solid #263349;cursor:pointer;user-select:none;transition:all .12s
 }}
 .pr-lbl:hover,.md-lbl:hover{{border-color:#475569;background:#0f172a}}
-.pr-top{{display:flex;align-items:center;gap:.36rem;font-size:.75rem;font-weight:700;color:#e2e8f0}}
-.pr-top input{{accent-color:#38bdf8;cursor:pointer}}
+.pr-top{{display:flex;align-items:center;gap:.38rem;font-size:.75rem;font-weight:700;color:#e2e8f0}}
+.ui-dot{{
+  display:inline-block;width:11px;height:11px;flex:0 0 11px;border-radius:50%;
+  border:2px solid #475569;background:#090d16;transition:all .12s
+}}
+.ui-chk{{
+  display:inline-block;width:11px;height:11px;flex:0 0 11px;border-radius:3px;
+  border:1.5px solid #475569;background:#090d16;transition:all .12s
+}}
 .pr-sub{{font-size:.67rem;color:#64748b;line-height:1.32}}
 
 .flip-pill{{
@@ -214,11 +222,15 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
   cursor:pointer;user-select:none;transition:border-color .12s,background .12s
 }}
 .flip-pill:hover{{border-color:#38bdf8;background:#0f172a}}
-.flip-pill input{{accent-color:#38bdf8;cursor:pointer}}
-.chess-app:has(#ai-hint:checked) label[for=ai-hint]{{border-color:#a855f7;background:#1e1035;color:#e9d5ff}}
-.chess-app:has(#flip-bd:checked) label[for=flip-bd]{{border-color:#38bdf8;background:#0c2136;color:#bae6fd}}
+#ai-hint:checked~.top-bar-grid label[for=ai-hint]{{border-color:#a855f7;background:#1e1035;color:#e9d5ff}}
+#ai-hint:checked~.top-bar-grid label[for=ai-hint] .ui-chk{{border-color:#c084fc;background:#a855f7;box-shadow:inset 0 0 0 2px #1e1035}}
+#flip-bd:checked~.top-bar-grid label[for=flip-bd]{{border-color:#38bdf8;background:#0c2136;color:#bae6fd}}
+#flip-bd:checked~.top-bar-grid label[for=flip-bd] .ui-chk{{border-color:#7dd3fc;background:#38bdf8;box-shadow:inset 0 0 0 2px #0c2136}}
 
-#mv{{display:block}}
+#mv{{display:block;--ai_side:1;--ai_en:1;--ai_peek:0}}
+#mode-1pb:checked~#mv{{--ai_side:0;--ai_en:1}}
+#mode-2p:checked~#mv{{--ai_en:0}}
+#ai-hint:checked~#mv{{--ai_peek:1}}
 .st,.ui-ctrl{{display:contents}}
 #mv input{{display:none}}
 
@@ -278,7 +290,7 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
   position:relative;width:100%;aspect-ratio:1/1;border-radius:8px;overflow:hidden;
   border:2px solid #334155;transition:transform .28s cubic-bezier(.22,1,.36,1)
 }}
-.chess-app:has(#flip-bd:checked) .board-frame{{transform:rotate(180deg)}}
+#flip-bd:checked~#mv .board-frame{{transform:rotate(180deg)}}
 
 .board-grid{{
   position:absolute;inset:0;display:grid;
@@ -302,7 +314,7 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
   display:flex;align-items:center;justify-content:center;
   transition:transform .28s cubic-bezier(.22,1,.36,1);pointer-events:none
 }}
-.chess-app:has(#flip-bd:checked) .sq-in{{transform:rotate(180deg)}}
+#flip-bd:checked~#mv .sq-in{{transform:rotate(180deg)}}
 .pc{{
   font-style:normal;font-size:clamp(1.85rem,5vw,2.85rem);line-height:1;
   font-variant-emoji:text;transform:translateY(-1px)
@@ -328,8 +340,7 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
 .ov-stack{{position:absolute;inset:0;z-index:10}}
 .ov{{display:none;position:absolute;inset:0;grid-template-columns:repeat(8,1fr);grid-template-rows:repeat(8,1fr)}}
 .ov-bg{{position:absolute;inset:0;z-index:1;cursor:default}}
-.ov i{{position:relative;z-index:2;display:block;pointer-events:none}}
-.ov label.lf,.ov label.lt{{position:absolute;top:0;display:block;cursor:pointer;pointer-events:auto}}
+.ov label.lf,.ov label.lt{{position:relative;align-self:start;justify-self:start;display:block;cursor:pointer;pointer-events:auto}}
 .ov label.lf{{z-index:2}}
 .ov label.lt{{z-index:3}}
 .ov label.lf:hover{{background:rgba(56,189,248,.16)}}
@@ -389,8 +400,8 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
 .pr-opt:hover{{border-color:#fbbf24;color:#fef08a}}
 .pr-opt b{{font-size:1.08rem;line-height:1;font-variant-emoji:text}}
 
-/* Fixed 1:1 SVG 2-Ply CNN Minimax Engine Stage (`664 x 636` CSS px — NEVER rescaled!) */
-.ai-col{{width:100%;max-width:{STAGE_W + 24}px}}
+/* Exact 1:1 Device-Pixel SVG 2-Ply + Q3 CNN Minimax Engine Stage (`666 x 636` user units; `444 x 424` on 3x DPR!) */
+.ai-col{{width:100%;max-width:{STAGE_VIEW_W + 24}px}}
 .ai-panel{{
   border:1px solid #1e3a5f;background:#0b111e;border-radius:14px;
   padding:.85rem .72rem .9rem;box-shadow:0 12px 32px rgba(0,0,0,.38)
@@ -403,18 +414,18 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
 .ai-sub{{font-size:.72rem;color:#64748b;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}}
 .ai-scroll{{overflow-x:auto}}
 .ai-stage-shell{{
-  position:relative;width:{STAGE_W}px;height:{STAGE_H}px;margin:0 auto;contain:layout paint;
+  position:relative;width:{STAGE_VIEW_W}px;height:{STAGE_H}px;margin:0 auto;contain:layout paint;
   border-radius:11px;background:#060a13;border:1px solid #1e293b;overflow:hidden
 }}
-.ai-fstage{{position:absolute;inset:0;width:{STAGE_W}px;height:{STAGE_H}px;display:block}}
+.ai-fstage{{position:absolute;inset:0;width:{STAGE_VIEW_W}px;height:{STAGE_H}px;display:block}}
 .ai-fstage image{{image-rendering:pixelated;pointer-events:none}}
-.ai-luts-2x,.sq8-flip{{display:none}}
-.chess-app:has(#flip-bd:checked) .sq8-norm{{display:none}}
-.chess-app:has(#flip-bd:checked) .sq8-flip{{display:inline}}
+.ai-luts-2x,.ai-vis-luts-2x,.sq8-flip{{display:none}}
+#flip-bd:checked~#mv .sq8-norm{{display:none}}
+#flip-bd:checked~#mv .sq8-flip{{display:inline}}
 
 /* Bypass GPU filter chain in 2-Player mode unless `Peek AI Hint` is checked! */
-.chess-app:has(#mode-2p:checked):not(:has(#ai-hint:checked)) .ai-fstage g{{filter:none!important}}
-.chess-app:has(#mode-2p:checked):not(:has(#ai-hint:checked)) .ai-fstage{{opacity:0}}
+#mode-2p:checked~#ai-hint:not(:checked)~#mv .ai-fstage g{{filter:none!important}}
+#mode-2p:checked~#ai-hint:not(:checked)~#mv .ai-fstage{{display:none}}
 
 /* Static-flow neutral-gray (`R == G == B`, Display-P3-immune!) `<foreignObject>` CSS-to-SVG pixel bridge */
 .ai-src-wrap{{width:{FO_W}px;height:{FO_H}px;background:transparent}}
@@ -433,8 +444,14 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
 .ai-m1c i{{flex:0 0 1px;height:2px;display:block}}
 
 @media (-webkit-min-device-pixel-ratio:1.5),(min-resolution:1.5dppx){{
-  .ai-luts-1x{{display:none}}
-  .ai-luts-2x{{display:inline}}
+  .ai-luts-1x,.ai-vis-luts-1x{{display:none}}
+  .ai-luts-2x,.ai-vis-luts-2x{{display:inline}}
+}}
+/* Exact 3x DPR iPhone / Super-Retina Mobile Scaling (`444/666 = 2/3` * `3` DPR = `2.000000` device px/unit!) */
+@media (-webkit-min-device-pixel-ratio:2.5),(min-resolution:2.5dppx){{
+  .ai-col{{max-width:468px}}
+  .ai-stage-shell,.ai-fstage{{width:{STAGE_VIEW_W * 2 // 3}px;height:{STAGE_H * 2 // 3}px}}
+  .ai-hud{{inset:auto;left:0;top:0;width:{STAGE_VIEW_W}px;height:{STAGE_H}px;transform:scale(calc(2/3));transform-origin:0 0}}
 }}
 
 /* HTML HUD Overlay inside `.ai-stage-shell` (titles, coordinates, legend, spoiler shield) */
@@ -457,26 +474,25 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
   display:grid;grid-template-rows:repeat(8,1fr);align-items:center;
   font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.62rem;font-weight:700;color:#64748b
 }}
-.chess-app:has(#flip-bd:checked) .bd-files{{direction:rtl}}
-.chess-app:has(#flip-bd:checked) .bd-ranks{{display:flex;flex-direction:column-reverse;justify-content:space-around}}
+#flip-bd:checked~#mv .bd-files{{direction:rtl}}
+#flip-bd:checked~#mv .bd-ranks{{display:flex;flex-direction:column-reverse;justify-content:space-around}}
 
-/* Spoiler shield over the 8x8 Move Map when it is the Human's turn (unless `Peek AI Hint` is checked!) */
+/* Idle / Spoiler shield over `.ai-stage-shell` when it is the Human's turn (unless `Peek AI Hint` is checked!) */
 .ai-shield{{
-  position:absolute;left:{VIS_BOARD_X - 1}px;top:{VIS_BOARD_Y - 1}px;
-  width:{VIS_BOARD_SZ + 2}px;height:{VIS_BOARD_SZ + 2}px;border-radius:4px;
-  background:rgba(8,13,25,.96);border:1px solid #1e293b;
+  position:absolute;inset:0;z-index:5;
+  background:rgba(6,10,19,.96);
   display:flex;flex-direction:column;align-items:center;justify-content:center;
-  padding:1rem;text-align:center;gap:.4rem
+  padding:2rem;text-align:center;gap:.55rem
 }}
-.ai-shield b{{font-size:.82rem;color:#e2e8f0}}
-.ai-shield span{{font-size:.7rem;color:#94a3b8;line-height:1.4}}
+.ai-shield b{{font-size:.95rem;color:#f8fafc}}
+.ai-shield span{{font-size:.78rem;color:#94a3b8;max-width:440px;line-height:1.45}}
 
 .ai-2p-cover{{
-  position:absolute;inset:0;background:rgba(6,10,19,.95);
+  position:absolute;inset:0;z-index:6;background:rgba(6,10,19,.97);
   display:none;flex-direction:column;align-items:center;justify-content:center;
   padding:2rem;text-align:center;gap:.55rem
 }}
-.chess-app:has(#mode-2p:checked):not(:has(#ai-hint:checked)) .ai-2p-cover{{display:flex}}
+#mode-2p:checked~#ai-hint:not(:checked)~#mv .ai-2p-cover{{display:flex}}
 .ai-2p-cover b{{font-size:.95rem;color:#f8fafc}}
 .ai-2p-cover span{{font-size:.78rem;color:#94a3b8;max-width:420px}}
 
@@ -503,8 +519,9 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
 """
     css.append(minify_ui_css(ui_css))
 
-    # SVG stage filter bindings (1x and 2x Retina)
+    # SVG stage filter bindings (1x and 2x/3x Retina)
     stage_ids = get_compute_stage_ids(w_spec)
+    assert stage_ids[-2:] == ("visa", "visb"), f"Expected tail (visa, visb), got {stage_ids[-2:]}"
     hidpi_sels: List[str] = []
     for sid in stage_ids:
         css.append(f".ai-{sid}{{filter:url(#ai-{sid}-1x)}}")
@@ -518,14 +535,18 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
     init_decls = ";".join(f"{k}:{v}" for k, v in sorted(std_vars.items()))
     css.append(f".init{{{init_decls}}}")
 
-    md_card_sels = ",".join(f".chess-app:has(#mode-{mid}:checked) label[for=mode-{mid}]" for mid, *_ in GAME_MODES)
-    md_sub_sels = ",".join(f".chess-app:has(#mode-{mid}:checked) label[for=mode-{mid}] .pr-sub" for mid, *_ in GAME_MODES)
+    md_card_sels = ",".join(f"#mode-{mid}:checked~.top-bar-grid label[for=mode-{mid}]" for mid, *_ in GAME_MODES)
+    md_dot_sels = ",".join(f"#mode-{mid}:checked~.top-bar-grid label[for=mode-{mid}] .ui-dot" for mid, *_ in GAME_MODES)
+    md_sub_sels = ",".join(f"#mode-{mid}:checked~.top-bar-grid label[for=mode-{mid}] .pr-sub" for mid, *_ in GAME_MODES)
     css.append(f"{md_card_sels}{{border-color:#c084fc;background:#1b1030;box-shadow:0 0 0 1px rgba(192,132,252,.28)}}")
+    css.append(f"{md_dot_sels}{{border-color:#c084fc;background:#a855f7;box-shadow:inset 0 0 0 2px #1b1030}}")
     css.append(f"{md_sub_sels}{{color:#d8b4fe}}")
 
-    pr_card_sels = ",".join(f".chess-app:has(#pr-{pid}:checked) label[for=pr-{pid}]" for pid, *_ in PRESETS)
-    pr_sub_sels = ",".join(f".chess-app:has(#pr-{pid}:checked) label[for=pr-{pid}] .pr-sub" for pid, *_ in PRESETS)
+    pr_card_sels = ",".join(f"#pr-{pid}:checked~.top-bar-grid label[for=pr-{pid}]" for pid, *_ in PRESETS)
+    pr_dot_sels = ",".join(f"#pr-{pid}:checked~.top-bar-grid label[for=pr-{pid}] .ui-dot" for pid, *_ in PRESETS)
+    pr_sub_sels = ",".join(f"#pr-{pid}:checked~.top-bar-grid label[for=pr-{pid}] .pr-sub" for pid, *_ in PRESETS)
     css.append(f"{pr_card_sels}{{border-color:#38bdf8;background:#0c2136;box-shadow:0 0 0 1px rgba(56,189,248,.28)}}")
+    css.append(f"{pr_dot_sels}{{border-color:#7dd3fc;background:#38bdf8;box-shadow:inset 0 0 0 2px #0c2136}}")
     css.append(f"{pr_sub_sels}{{color:#7dd3fc}}")
 
     for pid, _title, fen, _sub in PRESETS:
@@ -534,7 +555,7 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
         p_vars = state_to_css_vars(parse_fen(fen))
         p_decls = ";".join(f"{k}:{v}" for k, v in sorted(p_vars.items()) if p_vars[k] != std_vars.get(k))
         if p_decls:
-            css.append(f".chess-app:has(#pr-{pid}:checked) .init{{{p_decls}}}")
+            css.append(f"#pr-{pid}:checked~#mv .init{{{p_decls}}}")
 
     css.append(".p{--in_f:64;--in_t:64;--in_c:0;--in_pr:5}")
     for sq in range(64):
@@ -545,11 +566,30 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
     css.append(".pr:checked~.p{--in_pr:4}")
 
     css.append("#t0n:checked~.arena .ov0,#t0n:checked~.arena .pb0{display:grid}")
+    even_ply_sels: List[str] = ["#t0n:checked~.arena"]
+    odd_ply_sels: List[str] = []
     for k in range(1, max_plies):
         sel_k = f"#t{k - 1}n:not(:checked)+#t{k}n:checked~.arena"
         css.append(f"{sel_k} .ov{k},{sel_k} .pb{k}{{display:grid}}")
         css.append(f"{sel_k} .ub{k}{{display:inline-flex}}")
-    css.append(f"#t{max_plies - 1}n:not(:checked)~.arena .ub{max_plies}{{display:inline-flex}}")
+        if k % 2 == 0:
+            even_ply_sels.append(sel_k)
+        else:
+            odd_ply_sels.append(sel_k)
+    tail_sel = f"#t{max_plies - 1}n:not(:checked)~.arena"
+    css.append(f"{tail_sel} .ub{max_plies}{{display:inline-flex}}")
+    if max_plies % 2 == 0:
+        even_ply_sels.append(tail_sel)
+    else:
+        odd_ply_sels.append(tail_sel)
+
+    # Pause `.ai-fstage` (`display:none` + `filter:none!important` => 0 GPU surfaces & 0 Skia/CoreImage passes!)
+    # whenever it is the Human's turn and `Peek AI Hint` is unchecked!
+    pause_1pw_pfx = "#mode-1pw:checked~#ai-hint:not(:checked)~#mv "
+    pause_1pb_pfx = "#mode-1pb:checked~#ai-hint:not(:checked)~#mv "
+    pause_sels = [f"{pause_1pw_pfx}{s}" for s in even_ply_sels] + [f"{pause_1pb_pfx}{s}" for s in odd_ply_sels]
+    css.append(",".join(f"{s} .ai-fstage" for s in pause_sels) + "{display:none}")
+    css.append(",".join(f"{s} .ai-fstage g" for s in pause_sels) + "{filter:none!important}")
 
     for code, cls_s in ((5, "pq"), (2, "pn"), (4, "pr"), (3, "pb")):
         eq_pr = css_eq("var(--cur_pr)", code)
@@ -594,15 +634,17 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
         css.append(f".sq{sq} .mv-dot{{opacity:{quiet_dot};transform:scale({quiet_dot})}}")
         css.append(f".sq{sq} .cp-ring{{opacity:var(--cap_{sq});transform:scale(var(--cap_{sq}))}}")
 
+        r_sq, f_sq = divmod(sq, 8)
+        grid_pos = f"grid-row:{8 - r_sq};grid-column:{f_sq + 1};"
         css.append(
-            f".lf{sq}{{"
-            f"left:calc(-9999px*(1 - var(--can_sel_{sq})));"
+            f".lf{sq}{{{grid_pos}"
+            f"transform:translateX(calc(-9999px*(1 - var(--can_sel_{sq}))));"
             f"width:calc(100%*var(--can_sel_{sq}));"
             f"height:calc(100%*var(--can_sel_{sq}))}}"
         )
         css.append(
-            f".lt{sq}{{"
-            f"left:calc(-9999px*(1 - var(--leg_{sq})));"
+            f".lt{sq}{{{grid_pos}"
+            f"transform:translateX(calc(-9999px*(1 - var(--leg_{sq}))));"
             f"width:calc(100%*var(--leg_{sq}));"
             f"height:calc(100%*var(--leg_{sq}))}}"
         )
@@ -613,8 +655,8 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
             a = 8 * ay + ax
             sq_w = 8 * ay + ax
             sq_b = 8 * (7 - ay) + ax
-            for ch_idx, r_sfx in enumerate(("p", "n", "b", "r", "q", "k")):
-                css.append(f".ach{ch_idx}_{a}{{--g:{_chan_b_expr(r_sfx, sq_w, sq_b)}}}")
+            for ch_idx in range(6):
+                css.append(f".ach{ch_idx}_{a}{{--g:{_chan_b_expr(ch_idx + 1, sq_w, sq_b)}}}")
 
     for v1 in range(64):
         css.append(f".amu{v1}{{--g:calc(128 + var(--m1_u_{v1}))}}")
@@ -624,12 +666,27 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
     css.append(".ai-mt-chk{--g:calc(128 + 127*var(--in_check))}")
     css.append(".ai-mt-term{--g:calc(128 + 127*var(--is_terminal))}")
 
+    # CSS inheritance firewall on `.ai-col`: block piece-selection (`f_k`) & promo (`p_k`) style invalidation
+    # from ever propagating into `<foreignObject>` or re-running the 58-stage SVG filter pipeline in Blink!
+    firewall_vars = {
+        "--cur_from", "--cur_pr", "--in_f", "--in_t", "--in_c", "--in_pr", "--sel_can_promo",
+        *(f"--isel{sq}" for sq in range(64)),
+        *(f"--leg_{sq}" for sq in range(64)),
+        *(f"--cap_{sq}" for sq in range(64)),
+        *(f"--can_sel_{sq}" for sq in range(64)),
+    }
+    for stg_nm in ("e10", "e11", "e12"):
+        for lhs, _rhs in spec.stage_defs.get(stg_nm, []):
+            if lhs.startswith("--t"):
+                firewall_vars.add(lhs)
+    fw_decls = ";".join(f"{v}:0" for v in sorted(firewall_vars))
+
     # Live AI-turn detection (`--is_ai_turn == 1` iff 1P mode & live game & `--turn == --ai_side`)
     # Note: `--ai_show` is computed on child `.ai-col` so `.arena` has zero intra-element `@property` dependencies!
     css.append(
         ".arena{"
         "--is_ai_turn:calc(var(--ai_en)*(1 - var(--is_terminal))*(1 - (var(--turn) - var(--ai_side))*(var(--turn) - var(--ai_side))))}"
-        ".ai-col{--ai_show:min(1,var(--is_ai_turn) + var(--ai_peek))}"
+        f".ai-col{{--ai_show:min(1,var(--is_ai_turn) + var(--ai_peek));{fw_decls}}}"
         ".play-col{"
         "counter-reset:st var(--status) tn var(--turn) pl var(--ply) hm var(--hmc) "
         "slc var(--cur_from) lf var(--last_f) lt var(--last_t) pr var(--cur_pr)}"
@@ -655,12 +712,14 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
     # -----------------------------------------------------------------------
     # F. HTML Markup Assembly (Modes, Presets, 100-Ply Pipeline, Board & SVG AI)
     # -----------------------------------------------------------------------
+    top_inputs_html: List[str] = []
     mode_cards_html: List[str] = []
     for idx, (mid, title, sub) in enumerate(GAME_MODES):
         chk = " checked" if idx == 0 else ""
+        top_inputs_html.append(f'<input class=top-inp type=radio name=gmode id=mode-{mid}{chk}>')
         mode_cards_html.append(
             f'<label class=md-lbl for=mode-{mid}>'
-            f'<span class=pr-top><input type=radio name=gmode id=mode-{mid}{chk}>'
+            f'<span class=pr-top><i class=ui-dot></i>'
             f'<span>{html.escape(title)}</span></span>'
             f'<span class=pr-sub>{html.escape(sub)}</span></label>'
         )
@@ -668,12 +727,15 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
     preset_cards_html: List[str] = []
     for idx, (pid, title, _fen, sub) in enumerate(PRESETS):
         chk = " checked" if idx == 0 else ""
+        top_inputs_html.append(f'<input class=top-inp type=radio name=preset id=pr-{pid}{chk}>')
         preset_cards_html.append(
             f'<label class=pr-lbl for=pr-{pid}>'
-            f'<span class=pr-top><input type=radio name=preset id=pr-{pid}{chk}>'
+            f'<span class=pr-top><i class=ui-dot></i>'
             f'<span>{html.escape(title)}</span></span>'
             f'<span class=pr-sub>{html.escape(sub)}</span></label>'
         )
+    top_inputs_html.append('<input class=top-inp type=checkbox id=ai-hint>')
+    top_inputs_html.append('<input class=top-inp type=checkbox id=flip-bd>')
 
     board_cells_html: List[str] = []
     for sq in VISUAL_SQ_ORDER:
@@ -698,8 +760,8 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
 
     for k in range(max_plies):
         cells_k = "".join(
-            f'<i><label class="lf lf{sq}" for=f{k}_{sq}></label>'
-            f'<label class="lt lt{sq}" for=t{k}_{sq}></label></i>'
+            f'<label class="lf lf{sq}" for=f{k}_{sq}></label>'
+            f'<label class="lt lt{sq}" for=t{k}_{sq}></label>'
             for sq in VISUAL_SQ_ORDER
         )
         overlays_html.append(
@@ -717,7 +779,7 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
             f'<label class="btn undo-btn ub{k + 1}" for=t{k}n>&#x21B6; Undo Move</label>'
         )
 
-    # Assemble `<g class="ai-luts-1x">`, `<g class="ai-luts-2x">`, and `<foreignObject>` inside nested `<g>` stages
+    # Assemble compute LUTs inside `s1a` (`0..332 x 0..314` at 2x DPR!) and visual LUTs inside `visa`
     luts_1x_imgs: List[str] = []
     luts_2x_imgs: List[str] = []
     for key, (lx, ly), pw, ph in PHYS_LUT_SPECS:
@@ -728,18 +790,20 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
                 f'<image class=sq8-flip href="{lut_paths[fk]}" x="{lx}" y="{ly}" width="{pw}" height="{ph}" preserveAspectRatio="none"/>'
             )
             luts_2x_imgs.append(
-                f'<image class=sq8-norm href="{lut_paths[key]}" x="{lx}" y="{ly}" width="{pw // 2}" height="{ph // 2}" preserveAspectRatio="none"/>'
-                f'<image class=sq8-flip href="{lut_paths[fk]}" x="{lx}" y="{ly}" width="{pw // 2}" height="{ph // 2}" preserveAspectRatio="none"/>'
+                f'<image class=sq8-norm href="{lut_paths[key]}" x="{lx // 2}" y="{ly // 2}" width="{pw // 2}" height="{ph // 2}" preserveAspectRatio="none"/>'
+                f'<image class=sq8-flip href="{lut_paths[fk]}" x="{lx // 2}" y="{ly // 2}" width="{pw // 2}" height="{ph // 2}" preserveAspectRatio="none"/>'
             )
         else:
             luts_1x_imgs.append(
                 f'<image href="{lut_paths[key]}" x="{lx}" y="{ly}" width="{pw}" height="{ph}" preserveAspectRatio="none"/>'
             )
             luts_2x_imgs.append(
-                f'<image href="{lut_paths[key]}" x="{lx}" y="{ly}" width="{pw // 2}" height="{ph // 2}" preserveAspectRatio="none"/>'
+                f'<image href="{lut_paths[key]}" x="{lx // 2}" y="{ly // 2}" width="{pw // 2}" height="{ph // 2}" preserveAspectRatio="none"/>'
             )
 
-    for dpr, dst_lst in ((1, luts_1x_imgs), (2, luts_2x_imgs)):
+    vis_luts_1x_imgs: List[str] = []
+    vis_luts_2x_imgs: List[str] = []
+    for dpr, dst_lst in ((1, vis_luts_1x_imgs), (2, vis_luts_2x_imgs)):
         dst_lst.extend([
             f'<image href="{lut_paths[f"vis_bx_{dpr}x"]}" x="{LUT_VIS_BX_POS[0]}" y="{LUT_VIS_BX_POS[1]}" width="{VIS_BOARD_SZ}" height="4" preserveAspectRatio="none"/>',
             f'<image href="{lut_paths[f"vis_by_{dpr}x"]}" x="{LUT_VIS_BY_POS[0]}" y="{LUT_VIS_BY_POS[1]}" width="4" height="{VIS_BOARD_SZ}" preserveAspectRatio="none"/>',
@@ -757,9 +821,9 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
     m1v_cells = "".join(f"<i class=amv{v1}></i>" for v1 in range(64))
     m1k_cells = "".join(f"<i class=amk{v1}></i>" for v1 in range(64))
 
-    stage_chain = tuple(reversed(stage_ids))
-    open_gs = "".join(f'<g class=ai-{sid}>' for sid in stage_chain)
-    close_gs = "</g>" * len(stage_chain)
+    comp_chain = tuple(reversed(stage_ids[:-2]))
+    open_comp_gs = "".join(f'<g class=ai-{sid}>' for sid in comp_chain)
+    close_comp_gs = "</g>" * len(comp_chain)
 
     corr_r = metrics.get("test_stockfish_corr_svg_uint8", metrics.get("test_pearson_r_svg", 0.9186))
     rank_acc_pct = 100.0 * float(metrics.get("val_sibling_rank_acc", 0.9614))
@@ -797,31 +861,35 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
     )
 
     svg_panel_html = (
-        '<section class="ai-col" aria-label="SVG 2-Ply CNN Minimax AI Engine">'
+        '<section class="ai-col" aria-label="SVG 2-Ply + Quiescence CNN Minimax AI Engine">'
         '<div class=ai-panel>'
         '<div class=ai-head>'
-        '<span class=ai-title>HTML5 SVG 2-Ply CNN Minimax Engine</span>'
+        '<span class=ai-title>HTML5 SVG 2-Ply + Q3 CNN Minimax Engine</span>'
         f'<span class=ai-sub>{n_params:,} params &middot; 6&rarr;{c1_ch}({k1_sz}&times;{k1_sz})&rarr;{c2_ch}({k2_sz}&times;{k2_sz})&rarr;{c3_ch}({k3_sz}&times;{k3_sz})+3 skip &middot; Stockfish r={corr_r:.3f}</span>'
         '</div>'
         '<div class=ai-scroll>'
         '<div class=ai-stage-shell>'
-        f'<svg class=ai-fstage width="{STAGE_W}" height="{STAGE_H}" viewBox="0 0 {STAGE_W} {STAGE_H}">'
-        f'{open_gs}'
-        f'<rect x="0" y="0" width="{STAGE_W}" height="{STAGE_H}" fill="#000" fill-opacity="0"/>'
+        f'<svg class=ai-fstage width="{STAGE_VIEW_W}" height="{STAGE_H}" viewBox="0 0 {STAGE_VIEW_W} {STAGE_H}">'
+        f'<g class=ai-visb><g class=ai-visa>'
+        f'{open_comp_gs}'
+        f'<rect x="0" y="0" width="{STAGE_W // 2}" height="{COMP_H // 2}" fill="#000" fill-opacity="0"/>'
         f'<g class=ai-luts-1x><g transform="translate({FO_X},{FO_Y})">{fo_inner_html}</g>{"".join(luts_1x_imgs)}</g>'
-        f'<g class=ai-luts-2x><g transform="translate({FO_X},{FO_Y}) scale(0.5)">{fo_inner_html}</g>{"".join(luts_2x_imgs)}</g>'
-        f'{close_gs}</svg>'
+        f'<g class=ai-luts-2x><g transform="translate({FO_X // 2},{FO_Y // 2}) scale(0.5)">{fo_inner_html}</g>{"".join(luts_2x_imgs)}</g>'
+        f'{close_comp_gs}'
+        f'<g class=ai-vis-luts-1x>{"".join(vis_luts_1x_imgs)}</g>'
+        f'<g class=ai-vis-luts-2x>{"".join(vis_luts_2x_imgs)}</g>'
+        f'</g></g></svg>'
         '<div class=ai-hud aria-hidden="true">'
         f'<span class=hud-ttl style="left:{VIS_BOARD_X}px;top:16px">1. AI Best-Move Map (8&times;8)</span>'
         f'<span class=hud-sub style="left:{VIS_BOARD_X}px;top:33px">Violet = FROM &middot; Emerald = TO</span>'
         f'<div class=bd-files>{files_lbls}</div>'
         f'<div class=bd-ranks>{ranks_lbls}</div>'
         '<div class=ai-shield>'
-        '<b>Your Turn to Move</b>'
-        '<span>Play any legal move on the chessboard &mdash; the SVG 2-Ply CNN reply will light up here automatically (or check <em>Peek AI Hint</em> above).</span>'
+        '<b>Your Turn to Move &mdash; SVG AI Engine Idle (0 GPU Load)</b>'
+        '<span>Play any legal move on the chessboard &mdash; the 58-stage SVG 2-Ply + Q3 CNN engine wakes automatically on the AI&rsquo;s turn (or check <strong>Peek AI Hint</strong> above to run live neural search).</span>'
         '</div>'
-        f'<span class=hud-ttl style="left:{VIS_MAT_X}px;top:16px">2. 2-Ply Minimax Value Sheet (64 &times; 16 = 1,024 Leaves)</span>'
-        f'<span class=hud-sub style="left:{VIS_MAT_X}px;top:33px">Cols = 64 Ply-1 targets &middot; Rows = 16 MVV-LVA replies</span>'
+        f'<span class=hud-ttl style="left:{VIS_MAT_X}px;top:16px">2. 2-Ply + Q3 Value Sheet (64 &times; 16 = 1,024 Leaves)</span>'
+        f'<span class=hud-sub style="left:{VIS_MAT_X}px;top:33px">Cols = 64 Ply-1 targets &middot; Rows = 16 MVV-LVA replies + SEE Q3</span>'
         f'<span class=hud-sub style="left:{VIS_MAT_X}px;top:{VIS_QBAR_Y + VIS_QBAR_H + 5}px">Minimax Q(v&#x2081;) = min over opponent replies &middot; Gold bar = unique argmax move v&#x2081;*</span>'
         f'<span class=hud-ttl style="left:{VIS_WINBAR_X}px;top:{VIS_WINBAR_Y - 22}px">3. AI Win Probability (WDL)</span>'
         '<div class=wb-ticks><span>0%</span><span>25%</span><span>50%</span><span>75%</span><span>100%</span></div>'
@@ -833,12 +901,12 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
         '<span><i class=lg-sw style="background:#fbbf24"></i>Mate / Argmax</span>'
         '</div>'
         '<div class=arch-card>'
-        '<h4>Zero-JS 2-Ply CNN Architecture</h4>'
+        '<h4>Zero-JS 2-Ply + Q3 CNN Architecture</h4>'
         '<ul class=arch-list>'
         '<li><code>.e12&rarr;s1</code> 64 Ply-1 &times; 16 FIDE-legal replies (1,024 leaves)</li>'
-        '<li><code>s2a+s2m</code> Leaf expansion &amp; exact depth-2 mate check</li>'
+        '<li><code>s2m+s2q</code> Exact depth-2 mate check + SEE Ply-3 Quiescence</li>'
         f'<li><code>s2b&ndash;s4</code> <code>6&rarr;{c1_ch}({k1_sz}&times;{k1_sz})&rarr;{c2_ch}({k2_sz}&times;{k2_sz})&rarr;{c3_ch}({k3_sz}&times;{k3_sz})</code> + 3-ch skip</li>'
-        f'<li><code>s5v&ndash;s5b</code> <code>{vh_in}&rarr;1</code> WDL head + <code>feMorphology</code> min/max</li>'
+        f'<li><code>s5v&ndash;s5a</code> <code>{vh_in}&rarr;1</code> WDL head + <code>feMorphology</code> min/max</li>'
         '</ul></div>'
         f'<span class=hud-ttl style="left:{VIS_FEAT_X}px;top:{VIS_FEAT1_Y - 20}px">4. Live Skip-Material RGB Latent (ch {skip_ch0}&ndash;{skip_ch0 + 2}, 64&times;16)</span>'
         f'<span class=hud-ttl style="left:{VIS_FEAT_X}px;top:{VIS_FEAT2_Y - 20}px">5. Deep Tactical Conv3 RGB Latent (ch {3 * d3_g}&ndash;{3 * d3_g + 2}, 64&times;16)</span>'
@@ -928,30 +996,31 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
         '<svg aria-hidden="true" width="0" height="0" style="position:absolute;width:0;height:0;overflow:hidden;pointer-events:none">'
         f'<defs>{"".join(svg_defs)}</defs></svg>\n'
         "<main class=chess-app>\n"
+        f"{''.join(top_inputs_html)}\n"
         "<header class=hero>"
         "<nav class=back-row aria-label='Site navigation'>"
         "<a class=back-link href='../'>&larr; All NoJS Demos</a>"
         "</nav>"
         "<div class=badge-row>"
         "<span class='badge green'>0 Bytes JavaScript</span>"
-        "<span class='badge purple'>SVG 2-Ply CNN Minimax AI</span>"
+        "<span class='badge purple'>SVG 2-Ply + Ply-3 Quiescence AI</span>"
         f"<span class=badge>{n_params:,}-Param Stockfish Value Net (r={corr_r:.3f} &middot; {rank_acc_pct:.1f}% Rank Acc)</span>"
         f"<span class='badge amber'>6&rarr;{c1_ch} ({k1_sz}&times;{k1_sz})&rarr;{c2_ch} ({k2_sz}&times;{k2_sz})&rarr;{c3_ch} ({k3_sz}&times;{k3_sz}) + 3-Ch Skip</span>"
         "</div>"
-        "<h1>Pure HTML + CSS Chess with SVG 2-Ply CNN Minimax AI</h1>"
+        "<h1>Pure HTML + CSS Chess with SVG 2-Ply + Quiescence CNN AI</h1>"
         "<p>Full FIDE legal-move referee inside CSS <code>@property &lt;integer&gt;</code> style recalculation "
-        "paired with a 1-Player <strong>HTML5 SVG <code>&lt;filter&gt;</code> 2-Ply Minimax AI</strong> powered by "
+        "paired with a 1-Player <strong>HTML5 SVG <code>&lt;filter&gt;</code> 2-Ply + Ply-3 Quiescence Minimax AI</strong> powered by "
         f"a {n_params:,}-parameter Stockfish-distilled 8-bit CNN Value Network "
         f"(<code>6&rarr;{c1_ch} ({k1_sz}&times;{k1_sz} Knight-vision)&rarr;{c2_ch} ({k2_sz}&times;{k2_sz})&rarr;{c3_ch} ({k3_sz}&times;{k3_sz}) + 3-ch material skip</code>, "
         f"<code>r={corr_r:.3f}</code>, <code>{rank_acc_pct:.1f}%</code> sibling move-ranking accuracy) "
-        "evaluating 1,024 depth-2 FIDE-legal boards in parallel with exact Ply-1 &amp; Ply-2 checkmate detection.</p></header>\n"
+        "evaluating 1,024 FIDE-legal leaves in parallel with exact Ply-1/Ply-2 checkmate detection &amp; SEE-filtered Ply-3 capture resolution.</p></header>\n"
         "<div class=top-bar-grid>"
         '<section class=panel aria-label="Game Mode and AI Controls">'
         "<div class=panel-head>"
         "<span class=panel-title>Game Mode (1P vs SVG AI / 2P)</span>"
         "<div class=pill-row>"
-        "<label class=flip-pill for=ai-hint><input type=checkbox id=ai-hint><span>&#x1F441; Peek AI Hint</span></label>"
-        "<label class=flip-pill for=flip-bd><input type=checkbox id=flip-bd><span>&#x21C5; Flip Board</span></label>"
+        "<label class=flip-pill for=ai-hint><i class=ui-chk></i><span>&#x1F441; Peek AI Hint</span></label>"
+        "<label class=flip-pill for=flip-bd><i class=ui-chk></i><span>&#x21C5; Flip Board</span></label>"
         "</div></div>"
         f"<div class=mode-grid>{''.join(mode_cards_html)}</div>"
         "</section>"

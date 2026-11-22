@@ -47,7 +47,7 @@ from chess_ref import (
 )
 
 
-DEFAULT_MAX_PLIES = 100
+DEFAULT_MAX_PLIES = 80
 
 # 8 ray directions (d = 0..7), paired so (d ^ 1) is the exact opposite ray:
 #   0: E (0,+1) ax=1   1: W (0,-1) ax=1
@@ -443,6 +443,7 @@ def build_chess_css_spec() -> ChessCSSSpec:
     e0a: List[Tuple[str, str]] = []
     e0b: List[Tuple[str, str]] = []
     e2_roles: List[Tuple[str, str]] = []
+    e4_roles: List[Tuple[str, str]] = []
     for u in range(64):
         bu = f"var(--b{u})"
         occ_e = f"clamp(0,{bu},1)"
@@ -454,6 +455,18 @@ def build_chess_css_spec() -> ChessCSSSpec:
         e0a.append((f"--pt{u}", f"mod({bu},8)"))
         e0a.append((f"--isel{u}", wrap_calc(css_eq("var(--cur_from)", u))))
 
+        pt_e = f"mod({bu},8)"
+        is_b0 = css_eq(pt_e, PT_BISHOP)
+        is_r0 = css_eq(pt_e, PT_ROOK)
+        is_q0 = css_eq(pt_e, PT_QUEEN)
+        is_k0 = css_eq(pt_e, PT_KING)
+        own_e = f"((1 - var(--turn))*{wht_e} + var(--turn)*{blk_e})"
+        opp_e = f"(var(--turn)*{wht_e} + (1 - var(--turn))*{blk_e})"
+        e0a.append((f"--own_k{u}", wrap_calc(f"{own_e}*{is_k0}")))
+        e0a.append((f"--opp_dg{u}", wrap_calc(f"{opp_e}*({is_b0} + {is_q0})")))
+        e0a.append((f"--opp_or{u}", wrap_calc(f"{opp_e}*({is_r0} + {is_q0})")))
+        e0a.append((f"--onk{u}", wrap_calc(f"{occ_e} - {own_e}*{is_k0}")))
+
         pt_v = f"var(--pt{u})"
         is_p = css_eq(pt_v, PT_PAWN)
         is_n = css_eq(pt_v, PT_KNIGHT)
@@ -462,26 +475,18 @@ def build_chess_css_spec() -> ChessCSSSpec:
         is_q = css_eq(pt_v, PT_QUEEN)
         is_k = css_eq(pt_v, PT_KING)
 
-        e0b.append((f"--own_k{u}", wrap_calc(f"var(--own{u})*{is_k}")))
-        e0b.append((f"--opp_dg{u}", wrap_calc(f"var(--opp{u})*({is_b} + {is_q})")))
-        e0b.append((f"--opp_or{u}", wrap_calc(f"var(--opp{u})*({is_r} + {is_q})")))
-        e0b.append((f"--onk{u}", wrap_calc(f"var(--occ{u}) - var(--own{u})*{is_k}")))
-
-        e2_roles.append((f"--own_p{u}", wrap_calc(f"var(--own{u})*{is_p}")))
-        e2_roles.append((f"--own_n{u}", wrap_calc(f"var(--own{u})*{is_n}")))
-        e2_roles.append((f"--own_b{u}", wrap_calc(f"var(--own{u})*{is_b}")))
-        e2_roles.append((f"--own_r{u}", wrap_calc(f"var(--own{u})*{is_r}")))
-        e2_roles.append((f"--own_q{u}", wrap_calc(f"var(--own{u})*{is_q}")))
-        e2_roles.append((f"--own_dg{u}", wrap_calc(f"var(--own{u})*({is_b} + {is_q})")))
-        e2_roles.append((f"--own_or{u}", wrap_calc(f"var(--own{u})*({is_r} + {is_q})")))
         e2_roles.append((f"--opp_p{u}", wrap_calc(f"var(--opp{u})*{is_p}")))
         e2_roles.append((f"--opp_n{u}", wrap_calc(f"var(--opp{u})*{is_n}")))
-        e2_roles.append((f"--opp_b{u}", wrap_calc(f"var(--opp{u})*{is_b}")))
-        e2_roles.append((f"--opp_r{u}", wrap_calc(f"var(--opp{u})*{is_r}")))
-        e2_roles.append((f"--opp_q{u}", wrap_calc(f"var(--opp{u})*{is_q}")))
         e2_roles.append((f"--opp_k{u}", wrap_calc(f"var(--opp{u})*{is_k}")))
+
+        e4_roles.append((f"--own_p{u}", wrap_calc(f"var(--own{u})*{is_p}")))
+        e4_roles.append((f"--own_n{u}", wrap_calc(f"var(--own{u})*{is_n}")))
+        e4_roles.append((f"--own_b{u}", wrap_calc(f"var(--own{u})*{is_b}")))
+        e4_roles.append((f"--own_r{u}", wrap_calc(f"var(--own{u})*{is_r}")))
+        e4_roles.append((f"--own_q{u}", wrap_calc(f"var(--own{u})*{is_q}")))
+        e4_roles.append((f"--own_dg{u}", wrap_calc(f"var(--own{u})*({is_b} + {is_q})")))
+        e4_roles.append((f"--own_or{u}", wrap_calc(f"var(--own{u})*({is_r} + {is_q})")))
     stage_defs["e0a"] = e0a
-    stage_defs["e0b"] = e0b
 
     # Helper to emit a 2-stage Radix-3 Kogge-Stone `first_hit` ray scan (`3 -> 7` steps),
     # packing the 3-step empty flag `e3` directly into `h3` (`h3 + emp_scale * e3`)!
@@ -564,7 +569,7 @@ def build_chess_css_spec() -> ChessCSSSpec:
                     expr_h7 = css_or_terms(h_terms) if allow_empty_prop else " + ".join(h_terms)
                     s_full7_list.append((f"--{prefix}7_{d}_{u}", wrap_calc(expr_h7)))
 
-    # .e1, .e2: 2-Stage Radix-3 Ray Scan #1 + deferred piece-role flags
+    # .e0b, .e1, .e2: Staggered `ka` (`.e0b -> .e1`) & `hks` (`.e1 -> .e2`) Radix-3 Ray Scans!
     e1: List[Tuple[str, str]] = []
     e2: List[Tuple[str, str]] = list(e2_roles)
 
@@ -575,7 +580,7 @@ def build_chess_css_spec() -> ChessCSSSpec:
         return f"(var(--own_k{sq}) + 2*{_opp_slider_var(sq, d)})"
 
     add_radix3_ray_scan(
-        e1, e2,
+        e0b, e1,
         prefix="ka",
         prop_expr_fn=_opp_slider_var,
         occ_var_fn=lambda sq: f"var(--onk{sq})",
@@ -595,6 +600,7 @@ def build_chess_css_spec() -> ChessCSSSpec:
         collapse_or_by_sq=False,
     )
 
+    stage_defs["e0b"] = e0b
     stage_defs["e1"] = e1
     stage_defs["e2"] = e2
 
@@ -718,19 +724,21 @@ def build_chess_css_spec() -> ChessCSSSpec:
 
     stage_defs["e3"] = e3
 
-    # .e4: `--num_checkers`
-    e4: List[Tuple[str, str]] = []
+    # .e4: `--num_checkers` & deferred own-piece role flags
+    e4: List[Tuple[str, str]] = list(e4_roles)
     e4.append(("--num_checkers", wrap_calc(" + ".join(f"var(--ichk{u})" for u in range(64)))))
     stage_defs["e4"] = e4
 
-    # .e5: `evade[0..63]` & selected-piece metadata
+    # .e5: `evade[0..63]`, `vtgt[0..63]`, & selected-piece metadata
     e5: List[Tuple[str, str]] = []
     no_chk = css_eq("var(--num_checkers)", 0)
     one_chk = css_eq("var(--num_checkers)", 1)
 
     for v in range(64):
         ev_single = f"min(1,var(--ichk{v}) + (1 - var(--occ{v}))*var(--btwk{v}))"
-        e5.append((f"--evd{v}", wrap_calc(f"{no_chk} + {one_chk}*{ev_single}")))
+        ev_expr = f"({no_chk} + {one_chk}*{ev_single})"
+        e5.append((f"--evd{v}", wrap_calc(ev_expr)))
+        e5.append((f"--vtgt{v}", wrap_calc(f"(1 - var(--own{v}))*{ev_expr}")))
 
     for role_out, src_prefix in (
         ("--sel_p", "own_p"),
@@ -753,10 +761,9 @@ def build_chess_css_spec() -> ChessCSSSpec:
     ))
     stage_defs["e5"] = e5
 
-    # .e6: `vtgt[0..63]`, 28 En Passant candidate legality bits, & 4 Castling legality bits
+    # .e6 & .e7: En Passant, Castling, Pin Axes, & `rv` 2-Stage Radix-3 Ray Scan (`rv3` in e6, `rv7` in e7)
     e6: List[Tuple[str, str]] = []
-    for v in range(64):
-        e6.append((f"--vtgt{v}", wrap_calc(f"(1 - var(--own{v}))*var(--evd{v})")))
+    e7: List[Tuple[str, str]] = []
 
     for ef in range(8):
         t_sq = 40 + ef
@@ -821,7 +828,6 @@ def build_chess_css_spec() -> ChessCSSSpec:
     e6.append(("--cleg_bk", wrap_calc(c_bk_leg)))
     e6.append(("--cleg_bq", wrap_calc(c_bq_leg)))
 
-    # Precompute selected-piece pin axis allowances (`--sp0`, `--sp_ax1..4`) once in e6!
     sp0_e = "(1 - min(1,var(--sel_pdir)))"
     e6.append(("--sp0", wrap_calc(sp0_e)))
     for ax in (1, 2, 3, 4):
@@ -830,16 +836,9 @@ def build_chess_css_spec() -> ChessCSSSpec:
         p0_u = f"(1 - min(1,var(--pdir{u})))"
         for ax in (1, 2, 3, 4):
             e6.append((f"--pax{u}_{ax}", wrap_calc(f"{p0_u} + {css_eq(f'var(--pdir{u})', ax)}")))
-    stage_defs["e6"] = e6
-
-    # .e7, .e8: 2-Stage Radix-3 Ray Scan #2:
-    #   - `rv`: along ray `d` from `u`, >= 1 reachable square has `vtgt == 1`
-    #   - `sr`: looking from `v` in direction `d`, first occupied square is `--isel`
-    e7: List[Tuple[str, str]] = []
-    e8: List[Tuple[str, str]] = []
 
     add_radix3_ray_scan(
-        e7, e8,
+        e6, e7,
         prefix="rv",
         prop_expr_fn=lambda sq, _d: f"var(--vtgt{sq})",
         occ_var_fn=lambda sq: f"var(--occ{sq})",
@@ -847,16 +846,15 @@ def build_chess_css_spec() -> ChessCSSSpec:
         emp_scale=2,
         pack_emp=True,
     )
-    add_radix3_ray_scan(
-        e7, e8,
-        prefix="sr",
-        prop_expr_fn=lambda sq, _d: f"var(--isel{sq})",
-        occ_var_fn=lambda sq: f"var(--occ{sq})",
-        allow_empty_prop=False,
-        pack_emp=False,
-        ext_emp_prefix="rv",
-        ext_emp_scale=2,
-    )
+    stage_defs["e6"] = e6
+    stage_defs["e7"] = e7
+
+    # .e8 & .e9: `--has_leg_0..63`, material counts, `msl` Ray Scan (`msl3` in e8, `msl7` in e9,
+    #            reusing `rv`'s temporary registers & replacing the redundant 840-rule `sr` scan!),
+    #            and terminal game flags in `.e9`.
+    e8: List[Tuple[str, str]] = []
+    e8b: List[Tuple[str, str]] = []
+    e9: List[Tuple[str, str]] = []
 
     def _msl_prop_expr(sq: int, d_scan: int) -> str:
         ax = RAY_DIRS[d_scan][2]
@@ -865,20 +863,15 @@ def build_chess_css_spec() -> ChessCSSSpec:
         return f"((64 + {sq})*var(--own_b{sq}) + (128 + {sq})*var(--own_q{sq}))*var(--pax{sq}_{ax})"
 
     add_radix3_ray_scan(
-        e7, e8,
+        e8b, e9,
         prefix="msl",
         prop_expr_fn=_msl_prop_expr,
         occ_var_fn=lambda sq: f"var(--occ{sq})",
         allow_empty_prop=False,
-        pack_emp=False,
-        ext_emp_prefix="rv",
-        ext_emp_scale=2,
+        emp_scale=256,
+        pack_emp=True,
     )
-    stage_defs["e7"] = e7
-    stage_defs["e8"] = e8
 
-    # .e9: Per-square `--has_leg_0..63`, selected destination `--rleg_0..63`, & material counts
-    e9: List[Tuple[str, str]] = []
     for u in range(64):
         ur, uf = divmod(u, 8)
         p0 = f"(1 - min(1,var(--pdir{u})))"
@@ -955,8 +948,55 @@ def build_chess_css_spec() -> ChessCSSSpec:
             kg_tgts.extend(["var(--cleg_bk)", "var(--cleg_bq)"])
         hl_parts.append(f"var(--own_k{u})*{css_or_terms(kg_tgts)}")
 
-        e9.append((f"--has_leg_{u}", wrap_calc(css_or_terms(hl_parts))))
+        e8.append((f"--has_leg_{u}", wrap_calc(css_or_terms(hl_parts))))
 
+    prq_terms: List[str] = []
+    n_terms: List[str] = []
+    bl_terms: List[str] = []
+    bd_terms: List[str] = []
+    for u in range(64):
+        ur, uf = divmod(u, 8)
+        pt_u = f"var(--pt{u})"
+        prq_terms.append(f"({css_eq(pt_u, PT_PAWN)} + {css_eq(pt_u, PT_ROOK)} + {css_eq(pt_u, PT_QUEEN)})")
+        n_terms.append(css_eq(pt_u, PT_KNIGHT))
+        if (ur + uf) % 2 == 1:
+            bl_terms.append(css_eq(pt_u, PT_BISHOP))
+        else:
+            bd_terms.append(css_eq(pt_u, PT_BISHOP))
+
+    e8.append(("--mat_prq", wrap_calc(" + ".join(prq_terms))))
+    e8.append(("--mat_n", wrap_calc(" + ".join(n_terms))))
+    e8.append(("--mat_bl", wrap_calc(" + ".join(bl_terms))))
+    e8.append(("--mat_bd", wrap_calc(" + ".join(bd_terms))))
+    stage_defs["e8"] = e8
+    stage_defs["e8b"] = e8b
+
+    any_leg_s = f"min(1,{' + '.join(f'var(--has_leg_{u})' for u in range(64))})"
+    in_chk_s = "min(1,var(--num_checkers))"
+    mate_s = f"({in_chk_s}*(1 - {any_leg_s}))"
+    stale_s = f"((1 - {in_chk_s})*(1 - {any_leg_s}))"
+
+    no_prq = "(1 - min(1,var(--mat_prq)))"
+    n_eq0 = "(1 - min(1,var(--mat_n)))"
+    n_eq1 = css_eq("var(--mat_n)", 1)
+    bl_eq0 = "(1 - min(1,var(--mat_bl)))"
+    bd_eq0 = "(1 - min(1,var(--mat_bd)))"
+    insuf_raw = f"({no_prq}*min(1,{n_eq1}*{bl_eq0}*{bd_eq0} + {n_eq0}*min(1,{bl_eq0} + {bd_eq0})))"
+    insuf_s = f"({any_leg_s}*{insuf_raw})"
+    d50_s = f"({any_leg_s}*(1 - {insuf_raw})*clamp(0,var(--hmc) - 99,1))"
+    term_s = f"min(1,(1 - {any_leg_s}) + {insuf_raw} + clamp(0,var(--hmc) - 99,1))"
+
+    e9.append(("--any_leg", wrap_calc(any_leg_s)))
+    e9.append(("--in_check", wrap_calc(in_chk_s)))
+    e9.append(("--checkmate", wrap_calc(mate_s)))
+    e9.append(("--stalemate", wrap_calc(stale_s)))
+    e9.append(("--draw_insuf", wrap_calc(insuf_s)))
+    e9.append(("--draw_50", wrap_calc(d50_s)))
+    e9.append(("--is_terminal", wrap_calc(term_s)))
+    stage_defs["e9"] = e9
+
+    # .e10: Selected destination `--rleg_0..63` & Ply-1 piece candidates `--mc_*_0..63`
+    e10: List[Tuple[str, str]] = []
     sp0 = "var(--sp0)"
     sp_ax = {ax: f"var(--sp_ax{ax})" for ax in (1, 2, 3, 4)}
 
@@ -1009,7 +1049,7 @@ def build_chess_css_spec() -> ChessCSSSpec:
             dst_parts.append(f"var(--sel_n)*{sp0}*var(--vtgt{v})*({' + '.join(kn_src)})")
 
         or_src = [
-            f"{sp_ax[RAY_DIRS[d][2]]}*var(--sr7_{d ^ 1}_{v})"
+            f"clamp(0,var(--msl7_{d ^ 1}_{v}),1)*{css_eq_vars(f'mod(var(--msl7_{d ^ 1}_{v}),64)', 'var(--cur_from)')}"
             for d in range(4)
             if _step_sq(v, d ^ 1, 1) is not None
         ]
@@ -1017,7 +1057,7 @@ def build_chess_css_spec() -> ChessCSSSpec:
             dst_parts.append(f"var(--sel_or)*var(--vtgt{v})*({' + '.join(or_src)})")
 
         dg_src = [
-            f"{sp_ax[RAY_DIRS[d][2]]}*var(--sr7_{d ^ 1}_{v})"
+            f"clamp(0,var(--msl7_{d ^ 1}_{v}),1)*{css_eq_vars(f'mod(var(--msl7_{d ^ 1}_{v}),64)', 'var(--cur_from)')}"
             for d in range(4, 8)
             if _step_sq(v, d ^ 1, 1) is not None
         ]
@@ -1040,53 +1080,7 @@ def build_chess_css_spec() -> ChessCSSSpec:
         if kg_src:
             dst_parts.append(f"var(--sel_k)*{css_or_terms(kg_src)}")
 
-        e9.append((f"--rleg_{v}", wrap_calc(css_or_terms(dst_parts))))
-
-    prq_terms: List[str] = []
-    n_terms: List[str] = []
-    bl_terms: List[str] = []
-    bd_terms: List[str] = []
-    for u in range(64):
-        ur, uf = divmod(u, 8)
-        pt_u = f"var(--pt{u})"
-        prq_terms.append(f"({css_eq(pt_u, PT_PAWN)} + {css_eq(pt_u, PT_ROOK)} + {css_eq(pt_u, PT_QUEEN)})")
-        n_terms.append(css_eq(pt_u, PT_KNIGHT))
-        if (ur + uf) % 2 == 1:
-            bl_terms.append(css_eq(pt_u, PT_BISHOP))
-        else:
-            bd_terms.append(css_eq(pt_u, PT_BISHOP))
-
-    e9.append(("--mat_prq", wrap_calc(" + ".join(prq_terms))))
-    e9.append(("--mat_n", wrap_calc(" + ".join(n_terms))))
-    e9.append(("--mat_bl", wrap_calc(" + ".join(bl_terms))))
-    e9.append(("--mat_bd", wrap_calc(" + ".join(bd_terms))))
-    stage_defs["e9"] = e9
-
-    # .e10: Terminal Game Conditions (`--any_leg`, `--in_check`, `--checkmate`, `--stalemate`,
-    #       `--draw_insuf`, `--draw_50`, `--is_terminal`)
-    e10: List[Tuple[str, str]] = []
-    any_leg_s = f"min(1,{' + '.join(f'var(--has_leg_{u})' for u in range(64))})"
-    in_chk_s = "min(1,var(--num_checkers))"
-    mate_s = f"({in_chk_s}*(1 - {any_leg_s}))"
-    stale_s = f"((1 - {in_chk_s})*(1 - {any_leg_s}))"
-
-    no_prq = "(1 - min(1,var(--mat_prq)))"
-    n_eq0 = "(1 - min(1,var(--mat_n)))"
-    n_eq1 = css_eq("var(--mat_n)", 1)
-    bl_eq0 = "(1 - min(1,var(--mat_bl)))"
-    bd_eq0 = "(1 - min(1,var(--mat_bd)))"
-    insuf_raw = f"({no_prq}*min(1,{n_eq1}*{bl_eq0}*{bd_eq0} + {n_eq0}*min(1,{bl_eq0} + {bd_eq0})))"
-    insuf_s = f"({any_leg_s}*{insuf_raw})"
-    d50_s = f"({any_leg_s}*(1 - {insuf_raw})*clamp(0,var(--hmc) - 99,1))"
-    term_s = f"min(1,(1 - {any_leg_s}) + {insuf_raw} + clamp(0,var(--hmc) - 99,1))"
-
-    e10.append(("--any_leg", wrap_calc(any_leg_s)))
-    e10.append(("--in_check", wrap_calc(in_chk_s)))
-    e10.append(("--checkmate", wrap_calc(mate_s)))
-    e10.append(("--stalemate", wrap_calc(stale_s)))
-    e10.append(("--draw_insuf", wrap_calc(insuf_s)))
-    e10.append(("--draw_50", wrap_calc(d50_s)))
-    e10.append(("--is_terminal", wrap_calc(term_s)))
+        e10.append((f"--rleg_{v}", wrap_calc(css_or_terms(dst_parts))))
 
     def _chain_first(pairs: Sequence[Tuple[str, str]]) -> str:
         if not pairs:
@@ -1282,25 +1276,21 @@ def build_chess_css_spec() -> ChessCSSSpec:
     stage_defs["e12"] = e12
 
     ply_classes = ("m0", "m1")
-    eval_classes = ("e0a", "e0b", "e1", "e2", "e3", "e4", "e5", "e6", "e7", "e8", "e9", "e10", "e11", "e12")
+    eval_classes = ("e0a", "e0b", "e1", "e2", "e3", "e4", "e5", "e6", "e7", "e8", "e8b", "e9", "e10", "e11", "e12")
 
     keep_names: Set[str] = {
         "--in_f", "--in_t", "--in_c", "--in_pr",
         "--turn", "--cast_wk", "--cast_wq", "--cast_bk", "--cast_bq",
         "--ep_sq", "--hmc", "--ply", "--halted",
         "--last_f", "--last_t", "--cur_from", "--cur_pr",
-        "--num_checkers", "--sel_can_promo", "--sel_p",
+        "--num_checkers", "--sel_can_promo",
         "--any_leg", "--in_check", "--checkmate", "--stalemate",
         "--draw_insuf", "--draw_50", "--is_terminal", "--status",
     }
     for u in range(64):
         keep_names.update((
             f"--b{u}",
-            f"--occ{u}",
             f"--isel{u}",
-            f"--own_p{u}", f"--own_n{u}", f"--own_b{u}", f"--own_r{u}", f"--own_q{u}", f"--own_k{u}",
-            f"--opp_p{u}", f"--opp_n{u}", f"--opp_b{u}", f"--opp_r{u}", f"--opp_q{u}", f"--opp_k{u}",
-            f"--has_leg_{u}",
             f"--can_sel_{u}",
             f"--leg_{u}",
             f"--chk_k_{u}",
