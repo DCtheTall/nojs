@@ -32,7 +32,8 @@ All projects include Python code which generate the relevant HTML and CSS.
 
 ### [Chess](https://dcthetall.github.io/nojs/chess/) [`chess/`](chess/)
 
-- 1-player mode against an HTML5 SVG `<filter>` 2-ply + Ply-3 Quiescence Minimax AI + 2-player local Pass & Play
-- Stockfish-distilled 2,623-parameter 8-bit quantized CNN Value Network (`6→18 (5×5 Knight-vision)→27 (3×3)→36 (2×2) + 3-ch linear material skip`, `r = 0.919` correlation, `96.1%` sibling move-ranking accuracy) evaluating 1,024 FIDE-legal leaves in parallel with exact Ply-1/Ply-2 checkmate detection & SEE-filtered Ply-3 Quiescence
-- Full FIDE chess rules in CSS: pins, checks, castling, en passant, promotions, checkmate, stalemate, and 50-move rule
+- 1-player mode against an HTML5 SVG `<filter>` 2-ply + Ply-3 Quiescence Minimax AI
+- 2-player local Pass & Play
+- Stockfish-distilled 2,623-parameter 8-bit quantized CNN Value Network evaluating 1024 FIDE-legal leaves in parallel with exact Ply-1/Ply-2 checkmate detection & SEE-filtered Ply-3 Quiescence
+- Full FIDE chess rules in CSS
 - Supports undo, board flip, live neural value/latent heatmaps, and preset tactical positions
