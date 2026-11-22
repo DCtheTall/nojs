@@ -8,9 +8,10 @@ Generates a standalone zero-JavaScript HTML5 application combining:
      castling, en passant (including horizontal discovered-check pins), underpromotions,
      checkmate, stalemate, insufficient material, 50-move rule, LIFO Undo, and `.e12` Ply-1 bus.
   2. Pure HTML5 SVG `<filter>` 2-Ply CNN Minimax AI Opponent (`chess/svg_ai.py` + `chess/weights.json`):
-     Stockfish-distilled 3-layer 8-bit quantized CNN Value Network (`1,345` params, `r = 0.9033`)
-     evaluating `64 x 16 = 1,024` depth-2 FIDE-legal leaf boards in parallel via `<feConvolveMatrix>`,
-     `<feColorMatrix>`, `<feDisplacementMap>`, and `<feMorphology>` (`erode` + `dilate`).
+     Stockfish-distilled 3-layer 8-bit quantized CNN Value Network (`2,623` params, `r = 0.9186`)
+     evaluating `64 x 16 = 1,024` depth-2 FIDE-legal leaf boards in parallel (with exact depth-2
+     checkmate detection) via `<feConvolveMatrix>`, `<feColorMatrix>`, `<feDisplacementMap>`, and
+     `<feMorphology>` (`erode` + `dilate`).
 """
 
 from __future__ import annotations
@@ -35,7 +36,6 @@ from css_chess import (
 )
 from svg_ai import (
     ASSETS_DIR,
-    COMPUTE_STAGE_IDS,
     FO_H,
     FO_W,
     FO_X,
@@ -70,7 +70,9 @@ from svg_ai import (
     VIS_WINBAR_X,
     VIS_WINBAR_Y,
     WEIGHTS_DEFAULT_PATH,
+    best_dwconv3_triplet,
     compile_chess_ai_filters,
+    get_compute_stage_ids,
     load_weights,
     write_chess_ai_assets,
 )
@@ -462,9 +464,9 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
 .ai-shield{{
   position:absolute;left:{VIS_BOARD_X - 1}px;top:{VIS_BOARD_Y - 1}px;
   width:{VIS_BOARD_SZ + 2}px;height:{VIS_BOARD_SZ + 2}px;border-radius:4px;
-  background:rgba(8,13,25,.92);border:1px solid #1e293b;backdrop-filter:blur(5px);
+  background:rgba(8,13,25,.96);border:1px solid #1e293b;
   display:flex;flex-direction:column;align-items:center;justify-content:center;
-  padding:1rem;text-align:center;gap:.4rem;transition:opacity .18s
+  padding:1rem;text-align:center;gap:.4rem
 }}
 .ai-shield b{{font-size:.82rem;color:#e2e8f0}}
 .ai-shield span{{font-size:.7rem;color:#94a3b8;line-height:1.4}}
@@ -492,18 +494,19 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
 
 .arch-card{{
   position:absolute;left:{VIS_BOARD_X}px;top:{VIS_FEAT1_Y}px;width:{VIS_BOARD_SZ}px;height:{VIS_FEAT2_Y + VIS_FEAT_H - VIS_FEAT1_Y}px;
-  border-radius:8px;background:#09101d;border:1px solid #1e293b;padding:.68rem .78rem;
+  border-radius:8px;background:#09101d;border:1px solid #1e293b;padding:.56rem .72rem;
   display:flex;flex-direction:column;justify-content:space-between
 }}
-.arch-card h4{{font-size:.69rem;text-transform:uppercase;letter-spacing:.07em;color:#7dd3fc}}
-.arch-list{{list-style:none;display:flex;flex-direction:column;gap:.26rem;font-size:.66rem;color:#94a3b8;line-height:1.34}}
-.arch-list code{{color:#e2e8f0;font-size:.64rem}}
+.arch-card h4{{font-size:.67rem;text-transform:uppercase;letter-spacing:.06em;color:#7dd3fc}}
+.arch-list{{list-style:none;display:flex;flex-direction:column;gap:.2rem;font-size:.63rem;color:#94a3b8;line-height:1.28}}
+.arch-list code{{color:#e2e8f0;font-size:.61rem}}
 """
     css.append(minify_ui_css(ui_css))
 
     # SVG stage filter bindings (1x and 2x Retina)
+    stage_ids = get_compute_stage_ids(w_spec)
     hidpi_sels: List[str] = []
-    for sid in COMPUTE_STAGE_IDS:
+    for sid in stage_ids:
         css.append(f".ai-{sid}{{filter:url(#ai-{sid}-1x)}}")
         hidpi_sels.append(f".ai-{sid}{{filter:url(#ai-{sid}-2x)}}")
     css.append(f"@media (-webkit-min-device-pixel-ratio:1.5),(min-resolution:1.5dppx){{{''.join(hidpi_sels)}}}")
@@ -622,16 +625,17 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
     css.append(".ai-mt-term{--g:calc(128 + 127*var(--is_terminal))}")
 
     # Live AI-turn detection (`--is_ai_turn == 1` iff 1P mode & live game & `--turn == --ai_side`)
+    # Note: `--ai_show` is computed on child `.ai-col` so `.arena` has zero intra-element `@property` dependencies!
     css.append(
         ".arena{"
-        "--is_ai_turn:calc(var(--ai_en)*(1 - var(--is_terminal))*(1 - (var(--turn) - var(--ai_side))*(var(--turn) - var(--ai_side))));"
-        "--ai_show:min(1,var(--is_ai_turn) + var(--ai_peek))}"
+        "--is_ai_turn:calc(var(--ai_en)*(1 - var(--is_terminal))*(1 - (var(--turn) - var(--ai_side))*(var(--turn) - var(--ai_side))))}"
+        ".ai-col{--ai_show:min(1,var(--is_ai_turn) + var(--ai_peek))}"
         ".play-col{"
         "counter-reset:st var(--status) tn var(--turn) pl var(--ply) hm var(--hmc) "
         "slc var(--cur_from) lf var(--last_f) lt var(--last_t) pr var(--cur_pr)}"
     )
     css.append(
-        ".ai-shield{opacity:calc(1 - var(--ai_show))}"
+        ".ai-shield{opacity:calc(1 - var(--ai_show));transform:scale(calc(1 - var(--ai_show)))}"
         ".ai-turn-Callout{display:flex;opacity:var(--is_ai_turn);max-height:calc(80px*var(--is_ai_turn));"
         "padding:calc(.48rem*var(--is_ai_turn)) .72rem;margin-top:calc(.55rem*var(--is_ai_turn));"
         "border-width:calc(1px*var(--is_ai_turn));overflow:hidden}"
@@ -753,12 +757,22 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
     m1v_cells = "".join(f"<i class=amv{v1}></i>" for v1 in range(64))
     m1k_cells = "".join(f"<i class=amk{v1}></i>" for v1 in range(64))
 
-    stage_chain = tuple(reversed(COMPUTE_STAGE_IDS))
+    stage_chain = tuple(reversed(stage_ids))
     open_gs = "".join(f'<g class=ai-{sid}>' for sid in stage_chain)
     close_gs = "</g>" * len(stage_chain)
 
-    corr_r = metrics.get("test_pearson_r_svg", 0.9033)
-    n_params = metrics.get("total_parameters", 1345)
+    corr_r = metrics.get("test_stockfish_corr_svg_uint8", metrics.get("test_pearson_r_svg", 0.9186))
+    rank_acc_pct = 100.0 * float(metrics.get("val_sibling_rank_acc", 0.9614))
+    n_params = metrics.get("total_parameters", 2623)
+    c1_ch = int(w_spec["layers"]["mix1"]["out_channels"])
+    k1_sz = int(w_spec["layers"]["dwconv1"]["svg_order"][0])
+    c2_ch = int(w_spec["layers"]["mix2"]["out_channels"])
+    k2_sz = int(w_spec["layers"]["dwconv2"]["svg_order"][0])
+    c3_ch = int(w_spec["layers"]["mix3"]["out_channels"])
+    k3_sz = int(w_spec["layers"]["dwconv3"]["svg_order"][0])
+    skip_ch0 = c3_ch
+    vh_in = int(w_spec["layers"]["value_head"]["in_features"])
+    d3_g = best_dwconv3_triplet(w_spec)
 
     files_lbls = "".join(f"<span>{c}</span>" for c in "abcdefgh")
     ranks_lbls = "".join(f"<span>{r}</span>" for r in range(8, 0, -1))
@@ -787,7 +801,7 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
         '<div class=ai-panel>'
         '<div class=ai-head>'
         '<span class=ai-title>HTML5 SVG 2-Ply CNN Minimax Engine</span>'
-        f'<span class=ai-sub>{n_params:,} params · Stockfish r={corr_r:.3f} · 1,024 depth-2 leaves</span>'
+        f'<span class=ai-sub>{n_params:,} params &middot; 6&rarr;{c1_ch}({k1_sz}&times;{k1_sz})&rarr;{c2_ch}({k2_sz}&times;{k2_sz})&rarr;{c3_ch}({k3_sz}&times;{k3_sz})+3 skip &middot; Stockfish r={corr_r:.3f}</span>'
         '</div>'
         '<div class=ai-scroll>'
         '<div class=ai-stage-shell>'
@@ -819,15 +833,15 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
         '<span><i class=lg-sw style="background:#fbbf24"></i>Mate / Argmax</span>'
         '</div>'
         '<div class=arch-card>'
-        '<h4>Zero-JS SVG Pipeline</h4>'
+        '<h4>Zero-JS 2-Ply CNN Architecture</h4>'
         '<ul class=arch-list>'
-        '<li><code>.e12</code> CSS bus emits 64 legal Ply-1 moves into <code>&lt;foreignObject&gt;</code></li>'
-        '<li><code>s1a&ndash;s1i</code> FIDE pin/check rays select 16 quadrant replies/move</li>'
-        '<li><code>s2&ndash;s4</code> 3-layer 8-bit <code>feConvolveMatrix</code> CNN + linear skip</li>'
-        '<li><code>s5</code> <code>feMorphology</code> erode (MIN) &amp; dilate (MAX)</li>'
+        '<li><code>.e12&rarr;s1</code> 64 Ply-1 &times; 16 FIDE-legal replies (1,024 leaves)</li>'
+        '<li><code>s2a+s2m</code> Leaf expansion &amp; exact depth-2 mate check</li>'
+        f'<li><code>s2b&ndash;s4</code> <code>6&rarr;{c1_ch}({k1_sz}&times;{k1_sz})&rarr;{c2_ch}({k2_sz}&times;{k2_sz})&rarr;{c3_ch}({k3_sz}&times;{k3_sz})</code> + 3-ch skip</li>'
+        f'<li><code>s5v&ndash;s5b</code> <code>{vh_in}&rarr;1</code> WDL head + <code>feMorphology</code> min/max</li>'
         '</ul></div>'
-        f'<span class=hud-ttl style="left:{VIS_FEAT_X}px;top:{VIS_FEAT1_Y - 20}px">4. Live Skip-Material RGB Latent (ch 24&ndash;26, 64&times;16)</span>'
-        f'<span class=hud-ttl style="left:{VIS_FEAT_X}px;top:{VIS_FEAT2_Y - 20}px">5. Deep Tactical Conv3 RGB Latent (ch 21&ndash;23, 64&times;16)</span>'
+        f'<span class=hud-ttl style="left:{VIS_FEAT_X}px;top:{VIS_FEAT1_Y - 20}px">4. Live Skip-Material RGB Latent (ch {skip_ch0}&ndash;{skip_ch0 + 2}, 64&times;16)</span>'
+        f'<span class=hud-ttl style="left:{VIS_FEAT_X}px;top:{VIS_FEAT2_Y - 20}px">5. Deep Tactical Conv3 RGB Latent (ch {3 * d3_g}&ndash;{3 * d3_g + 2}, 64&times;16)</span>'
         '<div class=ai-2p-cover>'
         '<b>2-Player Pass &amp; Play Active</b>'
         '<span>SVG 2-Ply CNN Minimax filters are paused for zero GPU overhead. Switch to <strong>1P vs SVG AI</strong> or check <strong>Peek AI Hint</strong> above to run live neural search.</span>'
@@ -921,13 +935,16 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
         "<div class=badge-row>"
         "<span class='badge green'>0 Bytes JavaScript</span>"
         "<span class='badge purple'>SVG 2-Ply CNN Minimax AI</span>"
-        "<span class=badge>Stockfish-Distilled Value Net (r=0.903)</span>"
-        "<span class='badge amber'>Full FIDE Rules · Pins · Castling · En Passant · Mate</span>"
+        f"<span class=badge>{n_params:,}-Param Stockfish Value Net (r={corr_r:.3f} &middot; {rank_acc_pct:.1f}% Rank Acc)</span>"
+        f"<span class='badge amber'>6&rarr;{c1_ch} ({k1_sz}&times;{k1_sz})&rarr;{c2_ch} ({k2_sz}&times;{k2_sz})&rarr;{c3_ch} ({k3_sz}&times;{k3_sz}) + 3-Ch Skip</span>"
         "</div>"
         "<h1>Pure HTML + CSS Chess with SVG 2-Ply CNN Minimax AI</h1>"
         "<p>Full FIDE legal-move referee inside CSS <code>@property &lt;integer&gt;</code> style recalculation "
         "paired with a 1-Player <strong>HTML5 SVG <code>&lt;filter&gt;</code> 2-Ply Minimax AI</strong> powered by "
-        "a Stockfish-distilled 3-layer 8-bit quantized CNN Value Network evaluating up to 1,024 depth-2 boards in parallel.</p></header>\n"
+        f"a {n_params:,}-parameter Stockfish-distilled 8-bit CNN Value Network "
+        f"(<code>6&rarr;{c1_ch} ({k1_sz}&times;{k1_sz} Knight-vision)&rarr;{c2_ch} ({k2_sz}&times;{k2_sz})&rarr;{c3_ch} ({k3_sz}&times;{k3_sz}) + 3-ch material skip</code>, "
+        f"<code>r={corr_r:.3f}</code>, <code>{rank_acc_pct:.1f}%</code> sibling move-ranking accuracy) "
+        "evaluating 1,024 depth-2 FIDE-legal boards in parallel with exact Ply-1 &amp; Ply-2 checkmate detection.</p></header>\n"
         "<div class=top-bar-grid>"
         '<section class=panel aria-label="Game Mode and AI Controls">'
         "<div class=panel-head>"

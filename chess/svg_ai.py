@@ -3,8 +3,8 @@
 Multi-Stage Linear-VRAM HTML5 SVG `<filter>` 2-Ply CNN Minimax Engine (`chess/svg_ai.py`).
 
 Wires the Stockfish-distilled 3-layer 8-bit quantized Convolutional Value Network (`chess/weights.json`,
-1,345 parameters, 0 BatchNorm, Z0 = 128/255, Pearson r = 0.9033 vs Stockfish) into a pure HTML5 SVG
-`<filter>` 2-ply Minimax pipeline with:
+2,623 parameters, 5x5 Knight-vision Layer 1, Z0 = 128/255, Pearson r = 0.9186 vs Stockfish, 96.1% sibling rank acc)
+into a pure HTML5 SVG `<filter>` 2-ply Minimax pipeline with:
   - Exact Ply-1 legal moves (`64` destination columns from CSS `.e12`, including O-O, O-O-O, EP, promos)
   - Exact Ply-2 FIDE King-safety, check-evasion, double-check & pin-axis filtering across all 64 post-move
     boards (`640x10` strip), selecting up to 16 quadrant-optimal MVV-LVA opponent replies per Ply-1 move
@@ -52,32 +52,34 @@ TMP_S1_ORTH = (0, 36)      # 640 x 10: Orth & Diag slider rays / s1_in_check
 VRAM_S2_B0 = (0, 0)        # 640 x 160 (y = 0..159)
 VRAM_S2_B1 = (0, 160)      # 640 x 160 (y = 160..319)
 
-# 3. Stages s2b..s2d: CNN Layer 1 compacted `384 x 96` tiles (5 RGB triplets, 100% disjoint from S2_B0/B1!):
+# 3. Stages s2b..s2e: CNN Layer 1 compacted `384 x 96` tiles (5 or 6 RGB triplets, 100% disjoint from S2_B0/B1!):
 VRAM_P1_C6_0 = (0, 320)    # 384 x 96 (s2b)
 VRAM_P1_C6_1 = (0, 416)    # 384 x 96 (s2b)
 VRAM_P1_C6_2 = (0, 512)    # 384 x 96 (s2c)
 VRAM_P1_C6_3L = (384, 320) # 192 x 96 left half of triplet 3 (s2c)
 VRAM_P1_C6_3R = (384, 416) # 192 x 96 right half of triplet 3 (s2c)
-VRAM_P1_C6_4 = (0, 0)      # 384 x 96 (written at end of s2d, last reader of S2_B0/B1!)
+VRAM_P1_C6_4 = (0, 0)      # 384 x 96 (written in final s2 stage, last reader of S2_B0/B1!)
+VRAM_P1_C6_5 = (0, 96)     # 384 x 96 (written in final s2e stage when G1 == 6!)
 
-VRAM_SKIP_C2 = (384, 512)  # 128 x 32: skip_mat 2x2 features (s2d -> s4d)
-VRAM_META_C2 = (384, 544)  # 128 x 32: R=no_m2, G=s1_in_check (s2a -> s4c)
+VRAM_SKIP_C2 = (384, 512)  # 128 x 32: skip_mat 2x2 features
+VRAM_META_C2 = (384, 544)  # 128 x 32: R=no_m2, G=s1_in_check, B=is_s2_ai_mated
+TMP_S2_MATE  = (0, 320)    # 640 x 160 scratch workspace during s2m0..s2m9 (free before s2b!)
 
-# 4. Stages s3a..s3c: CNN Layer 2 compacted `128 x 32` tiles (6 RGB triplets at x=400..527, y=0..191):
-VRAM_P2_C2 = [(400, 32 * g) for g in range(6)]
+# 4. Stages s3*: CNN Layer 2 compacted `128 x 32` tiles (up to 9 RGB triplets at x=400..527, y=0..287):
+VRAM_P2_C2 = [(400, 32 * g) for g in range(9)]
 
-# 5. Stages s4a..s4b: CNN Layer 3a `mix3` `128 x 32` tiles (8 RGB triplets at x=0..127, y=0..255):
-VRAM_MIX3 = [(0, 32 * g) for g in range(8)]
+# 5. Stages s4m*: CNN Layer 3a `mix3` `128 x 32` tiles (up to 12 RGB triplets at x=0..127, y=0..383):
+VRAM_MIX3 = [(0, 32 * g) for g in range(12)]
 
-# 6. Stages s4c..s4d & s5a..s5b: Scalar `64 x 16` feature sheets + Minimax outputs at x=540..603:
-VRAM_DW3_C1 = [(540, 16 * g) for g in range(8)]       # x=540..603, y=0..127
-VRAM_SKIP_C1 = (540, 128)                             # 64 x 16 (y=128..143)
-VRAM_NOM2_C1 = (540, 146)                             # 64 x 16 (y=146..161: R=no_m2, G=s1_in_check)
-VRAM_VSHEET = (540, 170)                              # 64 x 16 (y=170..185: V_CNN in [3..253]/255, 255=no_m2)
-VRAM_QSTRIP = (540, 190)                              # 64 x 2  (y=190..191: Q(v1) in [0..254]/255)
-VRAM_WINMASK = (540, 196)                             # 64 x 2  (y=196..197: 1.0 at unique winning v1*)
-VRAM_BOARD8 = (540, 204)                              # 8 x 8   (y=204..211: RGB board + FROM/TO highlights)
-VRAM_WIN1PX = (560, 204)                              # 2 x 2   (R=128+u1*, G=128+v1*, B=Q_max)
+# 6. Stages s4d* & s5*: Scalar `64 x 16` feature sheets + Minimax outputs at x=540..603 (y=0..275 < 333):
+VRAM_DW3_C1 = [(540, 16 * g) for g in range(12)]      # x=540..603, y=0..191 (up to 12 triplets = 36 ch!)
+VRAM_SKIP_C1 = (540, 192)                             # 64 x 16 (y=192..207)
+VRAM_NOM2_C1 = (540, 210)                             # 64 x 16 (y=210..225: R=no_m2, G=s1_in_check)
+VRAM_VSHEET = (540, 234)                              # 64 x 16 (y=234..249: V_CNN in [3..253]/255, 255=no_m2)
+VRAM_QSTRIP = (540, 254)                              # 64 x 2  (y=254..255: Q(v1) in [0..254]/255)
+VRAM_WINMASK = (540, 260)                             # 64 x 2  (y=260..261: 1.0 at unique winning v1*)
+VRAM_BOARD8 = (540, 268)                              # 8 x 8   (y=268..275: RGB board + FROM/TO highlights)
+VRAM_WIN1PX = (560, 268)                              # 2 x 2   (R=128+u1*, G=128+v1*, B=Q_max)
 
 # SourceGraphic DOM `<foreignObject>` & Helper PNG LUT Coordinates (100% Display-P3-immune neutral gray!):
 FO_X = 0
@@ -147,14 +149,35 @@ VIS_FEAT2_Y = 528              # 384 x 64: dwconv3[0] RGB latent sheet
 VIS_FEAT_W = 384
 VIS_FEAT_H = 64
 
-COMPUTE_STAGE_IDS: Tuple[str, ...] = (
+S1_STAGE_IDS: Tuple[str, ...] = (
     "s1a", "s1b", "s1b2", "s1c", "s1c2", "s1d", "s1e", "s1e2", "s1e3", "s1f", "s1f2", "s1g", "s1g2", "s1g3", "s1h", "s1i",
-    "s2a", "s2b", "s2c", "s2d",
-    "s3a", "s3b", "s3c",
-    "s4a", "s4b", "s4c", "s4d",
-    "s5a", "s5b",
-    "visa", "visb",
 )
+S2M_STAGE_IDS: Tuple[str, ...] = (
+    "s2m0", "s2m1", "s2m2", "s2m3", "s2m4", "s2m5", "s2m6", "s2m7", "s2m8", "s2m9", "s2m10",
+)
+
+
+def get_compute_stage_ids(spec: dict) -> Tuple[str, ...]:
+    ly = spec["layers"]
+    g1 = len(ly["mix1"]["triplets"])
+    g2 = len(ly["mix2"]["triplets"])
+    g3 = len(ly["mix3"]["triplets"])
+    assert g1 in (5, 6) and 1 <= g2 <= 9 and 1 <= g3 <= 12
+    s2_tail = ("s2b", "s2c", "s2d") if g1 == 5 else ("s2b", "s2c", "s2d", "s2e")
+    s2_ids = ("s2a",) + S2M_STAGE_IDS + s2_tail
+    s3_step = 2 if g1 <= 5 else 1
+    s3_ids = tuple(f"s3{chr(ord('a') + i)}" for i in range((g2 + s3_step - 1) // s3_step))
+    m3_step = 4 if g2 <= 6 else 3
+    s4m_ids = tuple(f"s4m{i}" for i in range((g3 + m3_step - 1) // m3_step))
+    s4d_ids = tuple(f"s4d{i}" for i in range((g3 + 3) // 4))
+    return S1_STAGE_IDS + s2_ids + s3_ids + s4m_ids + s4d_ids + ("s5v", "s5a", "s5b", "visa", "visb")
+
+
+def best_dwconv3_triplet(spec: dict) -> int:
+    ly = spec["layers"]
+    g3 = len(ly["mix3"]["triplets"])
+    cms = ly["value_head"]["color_matrices"]
+    return max(range(g3), key=lambda g: sum(abs(float(x)) for x in cms[g][:3]))
 
 
 @dataclass
@@ -187,6 +210,23 @@ def _fmt_num(v: float) -> str:
         return "0"
     s = f"{v:.6f}".rstrip("0").rstrip(".")
     return "0" if s in ("", "-0") else s
+
+
+def _ct_u8(k: int) -> str:
+    """Format exact byte `k in [0..255]` for `<feComponentTransfer>` (`table` / `discrete`).
+
+    Chromium/Blink builds `<feComponentTransfer>` `uint8_t[256]` lookup tables via C++ float-to-int
+    truncation `static_cast<uint8_t>(255.0f * v)` (`floor`), whereas WebKit/CoreImage and GPU float
+    paths round `round(255.0 * v)`. Using `(k + 0.25) / 255.0` for `1 <= k <= 254` places `255 * v`
+    at `k + 0.25`, guaranteeing BOTH `int(255 * v) == k` AND `round(255 * v) == k` in `float32` &
+    `float64` with a full `0.25`-LSB safety margin on both sides.
+    """
+    assert 0 <= k <= 255, f"Byte out of [0..255]: {k}"
+    if k == 0:
+        return "0"
+    if k == 255:
+        return "1"
+    return f"{(k + 0.25) / 255.0:.6f}"
 
 
 def _fmt_list(vals: Sequence[float]) -> str:
@@ -670,6 +710,15 @@ def _select_ply2_quadrant_replies(s1_u8: np.ndarray) -> Tuple[List[Tuple[int, in
     mvv_grid[ai_mask[3]] = 3
     mvv_grid[ai_mask[4] | ai_mask[5]] = 4
 
+    ai_k_adj = np.zeros((8, 8), dtype=bool)
+    for ay in range(8):
+        for ax in range(8):
+            if ai_mask[5, ay, ax]:
+                for dx, dy in AI_KING_DELTAS:
+                    nx, ny = ax + dx, ay + dy
+                    if 0 <= nx < 8 and 0 <= ny < 8:
+                        ai_k_adj[ny, nx] = True
+
     best_sq_score = np.zeros((8, 8), dtype=np.int32)
     best_sq_u2 = np.full((8, 8), -1, dtype=np.int32)
     best_sq_pt2 = np.zeros((8, 8), dtype=np.int32)
@@ -679,6 +728,8 @@ def _select_ply2_quadrant_replies(s1_u8: np.ndarray) -> Tuple[List[Tuple[int, in
         placed_pt = 5 if (pt_src == 1 and ty == 0) else pt_src
         mvv = int(mvv_grid[ty, tx])
         base_tier = compute_ply2_base_tier(pt_src, mvv, 1 if ty == 0 else 0)
+        if pt_src == 5 and ai_k_adj[ty, tx]:
+            base_tier = max(base_tier, 30)
         sub_xy = 2 * (ty % 2) + (tx % 2)
         sc = 128 + 4 * base_tier + sub_xy
         # Matches `<feBlend mode="lighten">` on `128 + u2`: higher `u2` wins same-piece-type tie!
@@ -764,6 +815,99 @@ def _apply_ply2_on_norm_board(s1_u8: np.ndarray, u2: int, v2: int, pt2: int) -> 
     return s2
 
 
+def _shift_8x8(arr: np.ndarray, dx: int, dy: int) -> np.ndarray:
+    out = np.zeros_like(arr)
+    x0_s, x1_s = max(0, -dx), min(8, 8 - dx)
+    y0_s, y1_s = max(0, -dy), min(8, 8 - dy)
+    out[y0_s + dy : y1_s + dy, x0_s + dx : x1_s + dx] = arr[y0_s:y1_s, x0_s:x1_s]
+    return out
+
+
+def _ray_prop_8x8(src: np.ndarray, empty: np.ndarray, dx: int, dy: int) -> np.ndarray:
+    r = _shift_8x8(src, dx, dy)
+    e = _shift_8x8(empty, dx, dy)
+    for mul in (1, 2):
+        rs = _shift_8x8(r, mul * dx, mul * dy)
+        es = _shift_8x8(e, mul * dx, mul * dy)
+        r = np.clip(r + e * rs, 0, 1)
+        e = e * es
+    rs = _shift_8x8(r, 4 * dx, 4 * dy)
+    return np.clip(r + e * rs, 0, 1)
+
+
+def _is_ai_mated_on_s2(s2_u8: np.ndarray) -> bool:
+    """Bit-exact mirror of Stages `s2m0..s2m10`: detects when Opponent delivers Checkmate on Ply 2 (`s2`)."""
+    ai = (s2_u8 == 255).astype(np.int32)
+    op = (s2_u8 <= 1).astype(np.int32)
+    ai_P, ai_N, ai_B, ai_R, ai_Q, ai_K = [ai[i] for i in range(6)]
+    op_P, op_N, op_B, op_R, op_Q, op_K = [op[i] for i in range(6)]
+    ai_any = np.clip(ai.sum(axis=0), 0, 1)
+    op_any = np.clip(op.sum(axis=0), 0, 1)
+    empty = 1 - np.clip(ai_any + op_any, 0, 1)
+
+    opp_att = np.clip(_shift_8x8(op_P, 1, -1) + _shift_8x8(op_P, -1, -1), 0, 1)
+    for dx, dy in AI_KNIGHT_DELTAS:
+        opp_att = np.clip(opp_att + _shift_8x8(op_N, dx, dy), 0, 1)
+    for dx, dy in AI_KING_DELTAS:
+        opp_att = np.clip(opp_att + _shift_8x8(op_K, dx, dy), 0, 1)
+
+    chk_pn_p = op_P * np.clip(_shift_8x8(ai_K, -1, 1) + _shift_8x8(ai_K, 1, 1), 0, 1)
+    kn_k = np.zeros((8, 8), dtype=np.int32)
+    for dx, dy in AI_KNIGHT_DELTAS:
+        kn_k = np.clip(kn_k + _shift_8x8(ai_K, dx, dy), 0, 1)
+    chk_sq = np.clip(chk_pn_p + op_N * kn_k, 0, 1)
+    line_kz = np.zeros((8, 8), dtype=np.int32)
+
+    axes = (
+        ((1, 0), np.clip(op_R + op_Q, 0, 1)),
+        ((0, 1), np.clip(op_R + op_Q, 0, 1)),
+        ((1, 1), np.clip(op_B + op_Q, 0, 1)),
+        ((1, -1), np.clip(op_B + op_Q, 0, 1)),
+    )
+    for (dx, dy), op_sl in axes:
+        rp_r = _ray_prop_8x8(op_sl, empty, dx, dy)
+        rp_g = _ray_prop_8x8(ai_K, empty, dx, dy)
+        rn_r = _ray_prop_8x8(op_sl, empty, -dx, -dy)
+        rn_g = _ray_prop_8x8(ai_K, empty, -dx, -dy)
+        xray_p = _shift_8x8(ai_K * rp_r, dx, dy)
+        xray_n = _shift_8x8(ai_K * rn_r, -dx, -dy)
+        opp_att = np.clip(opp_att + rp_r + rn_r + xray_p + xray_n, 0, 1)
+        chk_sq = np.clip(chk_sq + np.clip(rp_g + rn_g, 0, 1) * op_sl, 0, 1)
+        line_kz = np.clip(line_kz + np.clip(rp_g * rn_r + rn_g * rp_r, 0, 1), 0, 1)
+
+    k_nb = np.zeros((8, 8), dtype=np.int32)
+    for dx, dy in AI_KING_DELTAS:
+        k_nb = np.clip(k_nb + _shift_8x8(ai_K, dx, dy), 0, 1)
+    kstep_ok = (1 - ai_any) * (1 - opp_att) * k_nb
+    n_chk = int(chk_sq.sum())
+    if n_chk == 0 or int(kstep_ok.sum()) > 0:
+        return False
+    if n_chk >= 2:
+        return True
+
+    evade_all = np.clip(chk_sq + line_kz * empty, 0, 1)
+    unpinned = 1 - (line_kz * ai_any)
+    uP, uN, uB, uR, uQ = ai_P * unpinned, ai_N * unpinned, ai_B * unpinned, ai_R * unpinned, ai_Q * unpinned
+
+    p1 = _shift_8x8(uP, 0, 1) * empty
+    r2_mask = np.zeros((8, 8), dtype=np.int32)
+    r2_mask[2, :] = 1
+    p2 = _shift_8x8(p1 * r2_mask, 0, 1) * empty
+    pc = np.clip(_shift_8x8(uP, 1, 1) + _shift_8x8(uP, -1, 1), 0, 1) * op_any
+    reach = np.clip(p1 + p2 + pc, 0, 1)
+
+    for dx, dy in AI_KNIGHT_DELTAS:
+        reach = np.clip(reach + _shift_8x8(uN, dx, dy), 0, 1)
+    uRQ = np.clip(uR + uQ, 0, 1)
+    uBQ = np.clip(uB + uQ, 0, 1)
+    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        reach = np.clip(reach + _ray_prop_8x8(uRQ, empty, dx, dy), 0, 1)
+    for dx, dy in ((1, 1), (-1, -1), (1, -1), (-1, 1)):
+        reach = np.clip(reach + _ray_prop_8x8(uBQ, empty, dx, dy), 0, 1)
+
+    return int((reach * evade_all).sum()) == 0
+
+
 def extract_root_board_u8_from_css(css_env: Dict[str, int]) -> np.ndarray:
     turn = int(css_env["--turn"])
     arr = np.full((6, 8, 8), 128, dtype=np.uint8)
@@ -811,7 +955,7 @@ def simulate_svg_2ply_cnn(css_env: Dict[str, int], spec: dict) -> SVG2PlyResult:
     if leaf_list:
         _, _, u8_vals = evaluate_svg_cnn_batch(np.stack(leaf_list, axis=0), spec)
         for idx, (q_idx, v1) in enumerate(leaf_coords):
-            v_sheet_u8[q_idx, v1] = int(u8_vals[idx])
+            v_sheet_u8[q_idx, v1] = 2 if _is_ai_mated_on_s2(leaf_list[idx]) else int(u8_vals[idx])
 
     is_term = int(css_env.get("--is_terminal", 0))
     if not is_term:
@@ -1006,7 +1150,7 @@ def _mux_higher_score(p: List[str], a_in: str, b_in: str, x: int, y: int, w: int
 
 
 def compile_chess_ai_filters(spec: dict, dpr: int) -> List[str]:
-    """Compile all 28 linear-VRAM SVG `<filter>` stages for `dpr in (1, 2)` (`<= 72` prims/stage)."""
+    """Compile all 45 linear-VRAM SVG `<filter>` stages for `dpr in (1, 2)` (`<= 74` prims/stage)."""
     assert dpr in (1, 2)
     u = 1.0 if dpr == 1 else 0.5
     sc = lambda v: v if dpr == 1 else (v // 2 if v % 2 == 0 else v * 0.5)
@@ -1026,10 +1170,12 @@ def compile_chess_ai_filters(spec: dict, dpr: int) -> List[str]:
     tbl_ge128 = " ".join(["0"] * 128 + ["1"] * 128)
     tbl_gt128 = " ".join(["0"] * 129 + ["1"] * 127)
     # Normalize `<foreignObject>` B0/B1 `{0, 128, 255}` -> `{1/255, 128/255, 255/255}`:
-    tbl_norm_root = " ".join(_fmt_num(max(1, c) / 255.0) for c in range(256))
+    tbl_norm_root = " ".join(_ct_u8(max(1, c)) for c in range(256))
+    z0_ct = _ct_u8(128)
+    neg_ct = _ct_u8(1)
 
     # `<foreignObject>` M1/M1C encodes `128 + code` (`code in 0..9` -> `128..137`):
-    def _code128_lut(active_codes: set[int], hi: str = "1", lo: str = z0_s) -> str:
+    def _code128_lut(active_codes: set[int], hi: str = "1", lo: str = z0_ct) -> str:
         return " ".join(hi if (c - 128) in active_codes else lo for c in range(256))
 
     tbl_ai_p = _code128_lut({1, 9})
@@ -1042,22 +1188,21 @@ def compile_chess_ai_filters(spec: dict, dpr: int) -> List[str]:
     tbl_is_ooo = _code128_lut({8}, "1", "0")
     tbl_is_ep = _code128_lut({9}, "1", "0")
 
-    neg_s = _fmt_num(1.0 / 255.0)
-    tbl_opp_p = _code128_lut({1}, neg_s, z0_s)
-    tbl_opp_n = _code128_lut({2}, neg_s, z0_s)
-    tbl_opp_b = _code128_lut({3}, neg_s, z0_s)
-    tbl_opp_r = _code128_lut({4}, neg_s, z0_s)
-    tbl_opp_q = _code128_lut({5}, neg_s, z0_s)
-    tbl_opp_k = _code128_lut({6}, neg_s, z0_s)
+    tbl_opp_p = _code128_lut({1}, neg_ct, z0_ct)
+    tbl_opp_n = _code128_lut({2}, neg_ct, z0_ct)
+    tbl_opp_b = _code128_lut({3}, neg_ct, z0_ct)
+    tbl_opp_r = _code128_lut({4}, neg_ct, z0_ct)
+    tbl_opp_q = _code128_lut({5}, neg_ct, z0_ct)
+    tbl_opp_k = _code128_lut({6}, neg_ct, z0_ct)
 
     # `cell_sq.png` stores `128 + sq` (`128..191`) on `0..7 x 0..7` and `250` on moat:
     tbl_subxy128 = " ".join(
-        _fmt_num((128 + 2 * (((c - 128) // 8) % 2) + ((c - 128) % 2)) / 255.0) if (128 <= c < 192) else "0"
+        _ct_u8(128 + 2 * (((c - 128) // 8) % 2) + ((c - 128) % 2)) if (128 <= c < 192) else "0"
         for c in range(256)
     )
     tbl_is_r0 = " ".join("1" if (128 <= c < 136) else "0" for c in range(256))
     tbl_is_r4 = " ".join("1" if (160 <= c < 168) else "0" for c in range(256))
-    tbl_csq_valid = " ".join(_fmt_num(c / 255.0) if (128 <= c < 192) else "0" for c in range(256))
+    tbl_csq_valid = " ".join(_ct_u8(c) if (128 <= c < 192) else "0" for c in range(256))
 
     # `mvv_code128` in `al2.B` is `128 + mvv + 5*is_r0` (`128..137`):
     def _tier128_lut_for_pt(pt_src: int) -> str:
@@ -1070,11 +1215,11 @@ def compile_chess_ai_filters(spec: dict, dpr: int) -> List[str]:
             is_r0 = 1 if mc >= 5 else 0
             mvv = mc - 5 if mc >= 5 else mc
             bt = compute_ply2_base_tier(pt_src, mvv, is_r0)
-            vals.append(_fmt_num((128 + 4 * bt) / 255.0))
+            vals.append(_ct_u8(128 + 4 * bt))
         return " ".join(vals)
 
     tbl_pt_p_placed128 = " ".join(
-        _fmt_num((128 + 5) / 255.0) if (133 <= c <= 137) else _fmt_num((128 + 1) / 255.0) for c in range(256)
+        _ct_u8(128 + 5) if (133 <= c <= 137) else _ct_u8(128 + 1) for c in range(256)
     )
     tbl_mvv_is_cap = " ".join("1" if (128 <= c < 138 and ((c - 128) % 5) != 0) else "0" for c in range(256))
     tbl_mvv_is_emp = " ".join("1" if (128 <= c < 138 and ((c - 128) % 5) == 0) else "0" for c in range(256))
@@ -1527,8 +1672,10 @@ def compile_chess_ai_filters(spec: dict, dpr: int) -> List[str]:
         f'<feColorMatrix in="ab0" x="{t_pnkx}" y="{t_pnky}" width="{s1_w}" height="{s1_h}" type="matrix" values="0 0 0 0 0 0 0 0 0 0 {_fmt_num(1/255)} {_fmt_num(2/255)} {_fmt_num(2/255)} 0 0 0 0 0 0 1" result="mv0"/>',
         f'<feColorMatrix in="ab1" x="{t_pnkx}" y="{t_pnky}" width="{s1_w}" height="{s1_h}" type="matrix" values="0 0 0 0 0 0 0 0 0 0 {_fmt_num(3/255)} {_fmt_num(4/255)} {_fmt_num(4/255)} 0 0 0 0 0 0 1" result="mv1"/>',
         f'<feColorMatrix in="r04" x="{t_pnkx}" y="{t_pnky}" width="{s1_w}" height="{s1_h}" type="matrix" values="0 0 0 0 0 0 0 0 0 0 {_fmt_num(5/255)} 0 0 0 {z0_s} 0 0 0 0 1" result="mvr0"/>',
+        f'<feColorMatrix in="opp_s" x="{t_pnkx}" y="{t_pnky}" width="{s1_w}" height="{s1_h}" type="matrix" values="0 0 0 0 0 0 0 0 0 0 {_fmt_num(10/255)} 0 0 0 0 0 0 0 0 1" result="opp_10"/>',
         f'<feComposite in="mv0" in2="mv1" x="{t_pnkx}" y="{t_pnky}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="mv01"/>',
-        f'<feComposite in="mv01" in2="mvr0" x="{t_pnkx}" y="{t_pnky}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="mv_b0"/>',
+        f'<feComposite in="mv01" in2="mvr0" x="{t_pnkx}" y="{t_pnky}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="mv_b00"/>',
+        f'<feComposite in="mv_b00" in2="opp_10" x="{t_pnkx}" y="{t_pnky}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="mv_b0"/>',
         f'<feComposite in="mv_b0" in2="bmask" x="{t_pnkx}" y="{t_pnky}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="mv_b"/>',
         f'<feColorMatrix in="pin2" x="{t_pnkx}" y="{t_pnky}" width="{s1_w}" height="{s1_h}" type="matrix" values="1 0 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 1" result="p2_rg"/>',
         f'<feComposite in="unp_rg" in2="p2_rg" x="{t_pnkx}" y="{t_pnky}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="al_d12"/>',
@@ -1611,10 +1758,13 @@ def compile_chess_ai_filters(spec: dict, dpr: int) -> List[str]:
     out_filters.append(_wrap_filter(f"ai-s1f2-{dpr}x", p1f2))
 
     # =========================================================================
-    # Stages `s1g, s1g2, s1g3`: Opponent Sliders (`192+u2` = R/B, `128+u2` = Q!)
+    # Stages `s1g, s1g2, s1g3`: Opponent Sliders (`R=192+u2_B / 128+u2_R`, `G=128+u2_Q`)
     # =========================================================================
-    # `csq` is ALREADY `128+u2` on `0..7 x 0..7`! Adding `+64/255` for `R` (orth) / `B` (diag) puts `R/B` in
-    # `192..255` and `Q` in `128..191` (`0` if empty) — 100% inside `{0} U [128..255]`!
+    # `_emit_packed_ray` propagates `R = Rook/Bishop (128+u2)` and `G = Queen (128+u2)` in parallel
+    # so `Queen` is never shadowed by `Bishop/Rook` before `s1i` checks `ai_k_adj` Contact-Queen-Check!
+    tbl_add64_ge128 = " ".join(_ct_u8(c + 64) if (128 <= c < 192) else "0" for c in range(256))
+    tbl_keep_ge128 = " ".join(_ct_u8(c) if (128 <= c < 192) else "0" for c in range(256))
+
     p1g: List[str] = [
         f'<feOffset in="SourceGraphic" dx="{t_orx - bm10_x}" dy="{t_ory - bm10_y}" x="{t_orx}" y="{t_ory}" width="{b10}" height="{b10}" result="bm0"/>',
         f'<feTile in="bm0" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" result="bmask"/>',
@@ -1627,18 +1777,16 @@ def compile_chess_ai_filters(spec: dict, dpr: int) -> List[str]:
         f'<feComposite in="ob10" in2="bmask" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="ob1"/>',
         f'<feComponentTransfer in="al2" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" result="emp_b"><feFuncR type="discrete" tableValues="0"/><feFuncG type="discrete" tableValues="0"/><feFuncB type="table" tableValues="{tbl_mvv_is_emp}"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
         f'<feComposite in="ob1" in2="csq" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="rq_csq"/>',
-        f'<feColorMatrix in="ob1" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" type="matrix" values="{_fmt_num(64/255)} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="rq_bns"/>',
-        f'<feColorMatrix in="rq_csq" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" type="matrix" values="1 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="rq_u"/>',
-        f'<feComposite in="rq_bns" in2="rq_u" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="rq_pk"/>',
-        f'<feComposite in="rq_pk" in2="al1" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="rq_h0"/>',
+        f'<feColorMatrix in="al1" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" type="matrix" values="1 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="alh_rg"/>',
+        f'<feComposite in="rq_csq" in2="alh_rg" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="rq_h0"/>',
         f'<feComposite in="rq_h0" in2="emp_b" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="rq_h"/>',
-        f'<feColorMatrix in="al1" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" type="matrix" values="0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="alv_r"/>',
-        f'<feComposite in="rq_pk" in2="alv_r" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="rq_v0"/>',
+        f'<feColorMatrix in="al1" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" type="matrix" values="0 1 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 1" result="alv_rg"/>',
+        f'<feComposite in="rq_csq" in2="alv_rg" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="rq_v0"/>',
         f'<feComposite in="rq_v0" in2="emp_b" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="rq_v"/>',
     ]
-    or0 = _emit_1ch_slider_ray(p1g, "rq_h", 1, 0, t_orx, t_ory, "or0")
-    or1 = _emit_1ch_slider_ray(p1g, "rq_h", -1, 0, t_orx, t_ory, "or1")
-    or2 = _emit_1ch_slider_ray(p1g, "rq_v", 0, 1, t_orx, t_ory, "or2")
+    or0 = _emit_packed_ray(p1g, "rq_h", 1, 0, t_orx, t_ory, "or0")
+    or1 = _emit_packed_ray(p1g, "rq_h", -1, 0, t_orx, t_ory, "or1")
+    or2 = _emit_packed_ray(p1g, "rq_v", 0, 1, t_orx, t_ory, "or2")
     p1g.extend([
         f'<feBlend in="{or0}" in2="{or1}" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" mode="lighten" result="or01"/>',
         f'<feBlend in="or01" in2="{or2}" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" mode="lighten" result="or012"/>',
@@ -1662,59 +1810,65 @@ def compile_chess_ai_filters(spec: dict, dpr: int) -> List[str]:
         f'<feComposite in="ob10" in2="bmask" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="ob1"/>',
         f'<feComponentTransfer in="al2" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" result="emp_b"><feFuncR type="discrete" tableValues="0"/><feFuncG type="discrete" tableValues="0"/><feFuncB type="table" tableValues="{tbl_mvv_is_emp}"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
         f'<feComposite in="ob1" in2="csq" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="rq_csq"/>',
-        f'<feColorMatrix in="ob1" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" type="matrix" values="{_fmt_num(64/255)} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="rq_bns"/>',
-        f'<feColorMatrix in="rq_csq" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" type="matrix" values="1 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="rq_u"/>',
-        f'<feComposite in="rq_bns" in2="rq_u" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="rq_pk"/>',
-        f'<feColorMatrix in="al1" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" type="matrix" values="0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="alv_r"/>',
-        f'<feComposite in="rq_pk" in2="alv_r" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="rq_v0"/>',
+        f'<feColorMatrix in="al1" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" type="matrix" values="0 1 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 1" result="alv_rg"/>',
+        f'<feComposite in="rq_csq" in2="alv_rg" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="rq_v0"/>',
         f'<feComposite in="rq_v0" in2="emp_b" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="rq_v"/>',
         f'<feComposite in="ob0" in2="csq" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="b_csq"/>',
-        f'<feColorMatrix in="ob0" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" type="matrix" values="0 0 {_fmt_num(64/255)} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="b_bns"/>',
         f'<feColorMatrix in="b_csq" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" type="matrix" values="0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="bu_r"/>',
-        f'<feColorMatrix in="rq_csq" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" type="matrix" values="0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="qu_r"/>',
-        f'<feComposite in="bu_r" in2="qu_r" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="bqu_r"/>',
-        f'<feComposite in="b_bns" in2="bqu_r" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="bq_pk"/>',
-        f'<feComposite in="bq_pk" in2="al2" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="bq_d10"/>',
+        f'<feColorMatrix in="rq_csq" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" type="matrix" values="0 0 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 1" result="qu_g"/>',
+        f'<feComposite in="bu_r" in2="qu_g" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="bq_rg"/>',
+        f'<feColorMatrix in="al2" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" type="matrix" values="1 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="ald1_rg"/>',
+        f'<feComposite in="bq_rg" in2="ald1_rg" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="bq_d10"/>',
         f'<feComposite in="bq_d10" in2="emp_b" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="bq_d1"/>',
     ]
-    or3 = _emit_1ch_slider_ray(p1g2, "rq_v", 0, -1, t_orx, t_ory, "or3")
-    dg0 = _emit_1ch_slider_ray(p1g2, "bq_d1", 1, 1, t_orx, t_ory, "dg0")
+    or3 = _emit_packed_ray(p1g2, "rq_v", 0, -1, t_orx, t_ory, "or3")
+    dg0 = _emit_packed_ray(p1g2, "bq_d1", 1, 1, t_orx, t_ory, "dg0")
     p1g2.extend([
         f'<feBlend in="or_prev" in2="{or3}" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" mode="lighten" result="or_all"/>',
+        f'<feBlend in="or_all" in2="{dg0}" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" mode="lighten" result="q_od0"/>',
         f'<feColorMatrix in="or_all" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" type="matrix" values="1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="ora_r"/>',
         f'<feColorMatrix in="{dg0}" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" type="matrix" values="0 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="dg0_g"/>',
-        f'<feColorMatrix in="bq_pk" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" type="matrix" values="0 0 0 0 0 0 0 0 0 0 1 0 0 0 0 0 0 0 0 1" result="bqpk_b"/>',
+        f'<feColorMatrix in="q_od0" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 1 0 0 0 0 0 0 0 1" result="q0_b"/>',
         f'<feComposite in="ora_r" in2="dg0_g" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="od_rg"/>',
-        f'<feComposite in="od_rg" in2="bqpk_b" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="or_g2"/>',
+        f'<feComposite in="od_rg" in2="q0_b" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="or_g2"/>',
     ])
     _emit_passthrough(p1g2, ["or_g2"])
     out_filters.append(_wrap_filter(f"ai-s1g2-{dpr}x", p1g2))
 
     p1g3: List[str] = [
+        f'<feOffset in="SourceGraphic" dx="{t_orx - csq_x}" dy="{t_ory - csq_y}" x="{t_orx}" y="{t_ory}" width="{b10}" height="{b10}" result="csq0"/>',
+        f'<feTile in="csq0" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" result="csq"/>',
         f'<feOffset in="SourceGraphic" dx="0" dy="0" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" result="og2"/>',
         f'<feOffset in="SourceGraphic" dx="{t_orx - t_pinx}" dy="{t_ory - t_piny}" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" result="al1"/>',
         f'<feOffset in="SourceGraphic" dx="{t_orx - t_pin2x}" dy="{t_ory - t_pin2y}" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" result="al2"/>',
+        f'<feOffset in="SourceGraphic" dx="{t_orx - s1_b0x}" dy="{t_ory - s1_b0y}" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" result="sb0"/>',
+        f'<feOffset in="SourceGraphic" dx="{t_orx - s1_b1x}" dy="{t_ory - s1_b1y}" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" result="sb1"/>',
         f'<feComponentTransfer in="al2" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" result="emp_b"><feFuncR type="discrete" tableValues="0"/><feFuncG type="discrete" tableValues="0"/><feFuncB type="table" tableValues="{tbl_mvv_is_emp}"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
-        f'<feColorMatrix in="og2" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" type="matrix" values="0 0 1 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 1" result="bq_rg"/>',
-        f'<feComposite in="bq_rg" in2="al2" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="bq_12"/>',
-        f'<feColorMatrix in="bq_12" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" type="matrix" values="1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="bqd1_0"/>',
+        f'<feColorMatrix in="sb0" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" type="matrix" values="0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="s0_r"/>',
+        f'<feColorMatrix in="sb1" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" type="matrix" values="0 0 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 1" result="s1_g"/>',
+        f'<feComposite in="s0_r" in2="s1_g" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="s_bq"/>',
+        f'<feComponentTransfer in="s_bq" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" result="ob_rg"><feFuncR type="table" tableValues="{tbl_eq1}"/><feFuncG type="table" tableValues="{tbl_eq1}"/><feFuncB type="discrete" tableValues="0"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
+        f'<feComposite in="ob_rg" in2="csq" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="bq_rg"/>',
+        f'<feColorMatrix in="al2" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" type="matrix" values="1 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="ald1_rg"/>',
+        f'<feComposite in="bq_rg" in2="ald1_rg" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="bqd1_0"/>',
         f'<feComposite in="bqd1_0" in2="emp_b" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="bq_d1"/>',
-        f'<feColorMatrix in="bq_12" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" type="matrix" values="0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="bqd2_0"/>',
+        f'<feColorMatrix in="al2" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" type="matrix" values="0 1 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 1" result="ald2_rg"/>',
+        f'<feComposite in="bq_rg" in2="ald2_rg" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="bqd2_0"/>',
         f'<feComposite in="bqd2_0" in2="emp_b" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="bq_d2"/>',
     ]
-    dg1 = _emit_1ch_slider_ray(p1g3, "bq_d1", -1, -1, t_orx, t_ory, "dg1")
-    dg2 = _emit_1ch_slider_ray(p1g3, "bq_d2", 1, -1, t_orx, t_ory, "dg2")
-    dg3 = _emit_1ch_slider_ray(p1g3, "bq_d2", -1, 1, t_orx, t_ory, "dg3")
+    dg1 = _emit_packed_ray(p1g3, "bq_d1", -1, -1, t_orx, t_ory, "dg1")
+    dg2 = _emit_packed_ray(p1g3, "bq_d2", 1, -1, t_orx, t_ory, "dg2")
+    dg3 = _emit_packed_ray(p1g3, "bq_d2", -1, 1, t_orx, t_ory, "dg3")
     p1g3.extend([
-        f'<feColorMatrix in="og2" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" type="matrix" values="0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="dg0_r"/>',
-        f'<feBlend in="dg0_r" in2="{dg1}" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" mode="lighten" result="dg01"/>',
-        f'<feBlend in="{dg2}" in2="{dg3}" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" mode="lighten" result="dg23"/>',
-        f'<feBlend in="dg01" in2="dg23" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" mode="lighten" result="dg_all"/>',
+        f'<feBlend in="{dg1}" in2="{dg2}" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" mode="lighten" result="dg12"/>',
+        f'<feBlend in="dg12" in2="{dg3}" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" mode="lighten" result="dg123"/>',
+        f'<feColorMatrix in="og2" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" type="matrix" values="0 1 0 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 1" result="og2_bg"/>',
+        f'<feBlend in="og2_bg" in2="dg123" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" mode="lighten" result="fin_bq"/>',
+        f'<feComponentTransfer in="fin_bq" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" result="bq_192"><feFuncR type="table" tableValues="{tbl_add64_ge128}"/><feFuncG type="table" tableValues="{tbl_keep_ge128}"/><feFuncB type="discrete" tableValues="0"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
+        f'<feColorMatrix in="og2" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" type="matrix" values="1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="rk_r"/>',
+        f'<feBlend in="bq_192" in2="rk_r" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" mode="lighten" result="sl_unm"/>',
         f'<feColorMatrix in="al1" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" type="matrix" values="0 0 1 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 1" result="ev_rg"/>',
-        f'<feColorMatrix in="og2" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" type="matrix" values="1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="or_r"/>',
-        f'<feColorMatrix in="dg_all" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" type="matrix" values="0 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="dg_g"/>',
-        f'<feComposite in="or_r" in2="dg_g" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="sl_rg0"/>',
-        f'<feComposite in="sl_rg0" in2="ev_rg" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="sl_out"/>',
+        f'<feComposite in="sl_unm" in2="ev_rg" x="{t_orx}" y="{t_ory}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="sl_out"/>',
     ])
     _emit_passthrough(p1g3, ["sl_out"])
     out_filters.append(_wrap_filter(f"ai-s1g3-{dpr}x", p1g3))
@@ -1751,14 +1905,14 @@ def compile_chess_ai_filters(spec: dict, dpr: int) -> List[str]:
         f'<feComposite in="p_rb" in2="p_u" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="cand_p"/>',
         # Knight candidate `(R=128+4*tier_N, G=128+u2, B=130/255)`:
         f'<feColorMatrix in="pn" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" type="matrix" values="0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 0 0 0 1" result="pn_g3"/>',
-        f'<feComponentTransfer in="mvc" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" result="tn_rb"><feFuncR type="table" tableValues="{_tier128_lut_for_pt(2)}"/><feFuncG type="discrete" tableValues="0"/><feFuncB type="discrete" tableValues="{_fmt_num(130/255)}"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
-        f'<feComponentTransfer in="pn_g3" x="{s1_kx}" y="{t_ory + (s1_ky - t_ory)}" width="{s1_w}" height="{s1_h}" result="n_m"><feFuncR type="table" tableValues="{tbl_ge128}"/><feFuncG type="discrete" tableValues="0"/><feFuncB type="table" tableValues="{tbl_ge128}"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
+        f'<feComponentTransfer in="mvc" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" result="tn_rb"><feFuncR type="table" tableValues="{_tier128_lut_for_pt(2)}"/><feFuncG type="discrete" tableValues="0"/><feFuncB type="discrete" tableValues="{_ct_u8(130)}"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
+        f'<feComponentTransfer in="pn_g3" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" result="n_m"><feFuncR type="table" tableValues="{tbl_ge128}"/><feFuncG type="discrete" tableValues="0"/><feFuncB type="table" tableValues="{tbl_ge128}"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
         f'<feColorMatrix in="pn_g3" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" type="matrix" values="0 0 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 1" result="n_u"/>',
         f'<feComposite in="tn_rb" in2="n_m" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="n_rb"/>',
         f'<feComposite in="n_rb" in2="n_u" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="cand_n"/>',
         # King candidate `(R=128+4*tier_K, G=128+u2, B=134/255)`:
         f'<feColorMatrix in="kg_u2b" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" type="matrix" values="0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 0 0 1" result="kg_b3"/>',
-        f'<feComponentTransfer in="mvc" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" result="tk_rb"><feFuncR type="table" tableValues="{_tier128_lut_for_pt(6)}"/><feFuncG type="discrete" tableValues="0"/><feFuncB type="discrete" tableValues="{_fmt_num(134/255)}"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
+        f'<feComponentTransfer in="mvc" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" result="tk_rb"><feFuncR type="table" tableValues="{_tier128_lut_for_pt(6)}"/><feFuncG type="discrete" tableValues="0"/><feFuncB type="discrete" tableValues="{_ct_u8(134)}"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
         f'<feComponentTransfer in="kg_b3" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" result="k_m"><feFuncR type="table" tableValues="{tbl_ge128}"/><feFuncG type="discrete" tableValues="0"/><feFuncB type="table" tableValues="{tbl_ge128}"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
         f'<feColorMatrix in="kg_b3" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" type="matrix" values="0 0 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 1" result="k_u"/>',
         f'<feComposite in="tk_rb" in2="k_m" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="k_rb"/>',
@@ -1777,41 +1931,49 @@ def compile_chess_ai_filters(spec: dict, dpr: int) -> List[str]:
     out_filters.append(_wrap_filter(f"ai-s1h-{dpr}x", p1h))
 
     # =========================================================================
-    # Stage `s1i`: Merge `Orth(R/Q)` & `Diag(B/Q)` vs `PNK` + `2x2` Quadrant Argmax
+    # Stage `s1i`: Merge `B/R` (`slm.R`) & `Q` (`slm.G` w/ `ai_k_adj` Tier 30) vs `PNK` + `2x2` Argmax
     # =========================================================================
-    # Inside `s1i` (single `<filter>`, no `<g>` boundary!), map `slm.G` (`diag`: `192+u2=B, 128+u2=Q`) -> `192+u2 (B), 64+u2 (Q)`
-    # and `slm.R` (`orth`: `192+u2=R, 128+u2=Q`) -> `128+u2 (R), 64+u2 (Q)`, so `<feBlend lighten>` picks `B > R > Q`!
-    tbl_diag_remap = " ".join(_fmt_num((c if c >= 192 else (c - 64)) / 255.0) if c >= 128 else "0" for c in range(256))
-    tbl_orth_remap = " ".join(_fmt_num((c - 64) / 255.0) if c >= 128 else "0" for c in range(256))
-    tbl_sl_u2_128 = " ".join(_fmt_num((128 + ((c - 64) % 64)) / 255.0) if c >= 64 else "0" for c in range(256))
+    tbl_sl_u2_128 = " ".join(_ct_u8(128 + ((c - 64) % 64)) if c >= 64 else "0" for c in range(256))
     tbl_sl_pt128 = " ".join(
-        _fmt_num(131 / 255) if c >= 192 else (_fmt_num(132 / 255) if c >= 128 else (_fmt_num(133 / 255) if c >= 64 else "0"))
+        _ct_u8(131) if c >= 192 else (_ct_u8(132) if c >= 128 else "0")
         for c in range(256)
     )
-    tbl_sl_has = " ".join("1" if c >= 64 else "0" for c in range(256))
-    tbl_sl_bonus = " ".join(_fmt_num(8 / 255) if c >= 192 else (_fmt_num(4 / 255) if c >= 128 else "0") for c in range(256))
+    tbl_sl_bonus = " ".join(_ct_u8(8) if c >= 192 else (_ct_u8(4) if c >= 128 else "0") for c in range(256))
     tbl_subxy_raw = " ".join(
-        _fmt_num((2 * (((c - 128) // 8) % 2) + ((c - 128) % 2)) / 255.0) if (128 <= c < 192) else "0"
+        _ct_u8(2 * (((c - 128) // 8) % 2) + ((c - 128) % 2)) if (128 <= c < 192) else "0"
         for c in range(256)
     )
 
     p1i: List[str] = [
+        f'<feOffset in="SourceGraphic" dx="{s1_kx - bm10_x}" dy="{s1_ky - bm10_y}" x="{s1_kx}" y="{s1_ky}" width="{b10}" height="{b10}" result="bm0"/>',
+        f'<feTile in="bm0" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" result="bmask"/>',
         f'<feOffset in="SourceGraphic" dx="{s1_kx - csq_x}" dy="{s1_ky - csq_y}" x="{s1_kx}" y="{s1_ky}" width="{b10}" height="{b10}" result="csq0"/>',
         f'<feTile in="csq0" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" result="csq"/>',
         f'<feOffset in="SourceGraphic" dx="0" dy="0" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" result="pnk"/>',
         f'<feOffset in="SourceGraphic" dx="{s1_kx - t_orx}" dy="{s1_ky - t_ory}" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" result="slm"/>',
         f'<feOffset in="SourceGraphic" dx="{s1_kx - t_pin2x}" dy="{s1_ky - t_pin2y}" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" result="al2"/>',
-        f'<feComponentTransfer in="slm" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" result="sl_rm"><feFuncR type="table" tableValues="{tbl_orth_remap}"/><feFuncG type="table" tableValues="{tbl_diag_remap}"/><feFuncB type="discrete" tableValues="0"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
-        f'<feColorMatrix in="sl_rm" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" type="matrix" values="1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 0 0 0 0 1" result="slo_3"/>',
-        f'<feColorMatrix in="sl_rm" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" type="matrix" values="0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 0 0 0 1" result="sld_3"/>',
-        f'<feBlend in="sld_3" in2="slo_3" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" mode="lighten" result="sl_r3"/>',
+        f'<feOffset in="SourceGraphic" dx="{s1_kx - s1_b1x}" dy="{s1_ky - s1_b1y}" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" result="sb1"/>',
+        f'<feComponentTransfer in="sb1" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" result="aik0"><feFuncR type="discrete" tableValues="0"/><feFuncG type="discrete" tableValues="0"/><feFuncB type="table" tableValues="{tbl_eq255}"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
+        f'<feComposite in="aik0" in2="bmask" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="aik"/>',
+        f'<feConvolveMatrix in="aik" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" order="3 3" targetX="1" targetY="1" divisor="1" bias="0" kernelMatrix="1 1 1 1 0 1 1 1 1" edgeMode="none" preserveAlpha="true" result="k_adj"/>',
         f'<feColorMatrix in="al2" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" type="matrix" values="0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="mvc_r"/>',
         f'<feComponentTransfer in="mvc_r" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" result="tq_r"><feFuncR type="table" tableValues="{_tier128_lut_for_pt(5)}"/><feFuncG type="discrete" tableValues="0"/><feFuncB type="discrete" tableValues="0"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
-        f'<feComponentTransfer in="sl_r3" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" result="sl_bns"><feFuncR type="table" tableValues="{tbl_sl_bonus}"/><feFuncG type="table" tableValues="{tbl_sl_u2_128}"/><feFuncB type="table" tableValues="{tbl_sl_pt128}"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
-        f'<feComponentTransfer in="sl_r3" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" result="sl_msk"><feFuncR type="table" tableValues="{tbl_sl_has}"/><feFuncG type="discrete" tableValues="1"/><feFuncB type="discrete" tableValues="1"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
-        f'<feComposite in="tq_r" in2="sl_bns" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="sl_raw"/>',
-        f'<feComposite in="sl_raw" in2="sl_msk" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="cand_sl"/>',
+        # `B / R` candidate from `slm.R` (`192+u2=B, 128+u2=R`):
+        f'<feColorMatrix in="slm" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" type="matrix" values="1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 0 0 0 0 1" result="sl_r3"/>',
+        f'<feComponentTransfer in="sl_r3" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" result="br_bns"><feFuncR type="table" tableValues="{tbl_sl_bonus}"/><feFuncG type="table" tableValues="{tbl_sl_u2_128}"/><feFuncB type="table" tableValues="{tbl_sl_pt128}"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
+        f'<feComponentTransfer in="sl_r3" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" result="br_msk"><feFuncR type="table" tableValues="{tbl_ge128}"/><feFuncG type="table" tableValues="{tbl_ge128}"/><feFuncB type="table" tableValues="{tbl_ge128}"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
+        f'<feComposite in="tq_r" in2="br_bns" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="br_raw"/>',
+        f'<feComposite in="br_raw" in2="br_msk" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="cand_br"/>',
+        # `Q` candidate from `slm.G` (`128+u2=Q`, boosted to Tier `30` = `248/255` on `k_adj`!):
+        f'<feColorMatrix in="k_adj" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" type="matrix" values="0 0 {_fmt_num(248/255)} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="kq_248"/>',
+        f'<feBlend in="tq_r" in2="kq_248" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" mode="lighten" result="tq_adj"/>',
+        f'<feColorMatrix in="slm" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" type="matrix" values="0 0 0 0 0 0 1 0 0 0 0 0 0 0 {_fmt_num(133/255)} 0 0 0 0 1" result="q_gb"/>',
+        f'<feColorMatrix in="slm" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" type="matrix" values="0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 0 0 0 1" result="sl_g3"/>',
+        f'<feComponentTransfer in="sl_g3" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" result="q_msk"><feFuncR type="table" tableValues="{tbl_ge128}"/><feFuncG type="table" tableValues="{tbl_ge128}"/><feFuncB type="table" tableValues="{tbl_ge128}"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
+        f'<feComposite in="tq_adj" in2="q_gb" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="q_raw"/>',
+        f'<feComposite in="q_raw" in2="q_msk" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="cand_q"/>',
     ]
+    _mux_higher_score(p1i, "cand_q", "cand_br", s1_kx, s1_ky, s1_w, s1_h, "cand_sl")
     _mux_higher_score(p1i, "pnk", "cand_sl", s1_kx, s1_ky, s1_w, s1_h, "sq_win0")
     p1i.extend([
         f'<feComponentTransfer in="sq_win0" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" result="has_m"><feFuncR type="table" tableValues="{tbl_ge128}"/><feFuncG type="discrete" tableValues="0"/><feFuncB type="discrete" tableValues="0"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
@@ -1843,8 +2005,8 @@ def compile_chess_ai_filters(spec: dict, dpr: int) -> List[str]:
     skc2_x, skc2_y = sc(VRAM_SKIP_C2[0]), sc(VRAM_SKIP_C2[1])
     c2_w, c2_h = sc(128), sc(32)
 
-    tbl_dv2_r = " ".join(_fmt_num((8 * ((c // 2) % 2) + (c % 2)) / 255.0) if c >= 128 else "0" for c in range(256))
-    tbl_dv2_fb = " ".join("0" if c >= 128 else _fmt_num(192 / 255) for c in range(256))
+    tbl_dv2_r = " ".join(_ct_u8(8 * ((c // 2) % 2) + (c % 2)) if c >= 128 else "0" for c in range(256))
+    tbl_dv2_fb = " ".join("0" if c >= 128 else _ct_u8(192) for c in range(256))
 
     x_slices_10_2 = [
         (sc(0), sc(0), sc(140), sc(28)),
@@ -1923,6 +2085,372 @@ def compile_chess_ai_filters(spec: dict, dpr: int) -> List[str]:
     out_filters.append(_wrap_filter(f"ai-s2a-{dpr}x", p2a))
 
     # =========================================================================
+    # Stages `s2m0..s2m10`: Exact Depth-2 Opponent Checkmate Detector (`640 x 160`)
+    #                       Writes `is_s2_ai_mated` into `VRAM_META_C2.B` (`128 x 32`)!
+    # =========================================================================
+    tm_y = sc(TMP_S2_MATE[1])
+    tbl_is_r2 = " ".join("1" if (144 <= c < 152) else "0" for c in range(256))
+    tbl_chk_r = " ".join("0" if c < 64 else (_ct_u8(128) if c < 192 else "1") for c in range(256))
+    tbl_lt64 = " ".join("1" if c < 64 else "0" for c in range(256))
+    tbl_64_191 = " ".join("1" if (64 <= c < 192) else "0" for c in range(256))
+    tbl_ge192 = " ".join("1" if c >= 192 else "0" for c in range(256))
+
+    def _emit_s2_packed_ray(p: List[str], pack_in: str, dx_p: int, dy_p: int, tag: str) -> str:
+        sx1, sy1 = sc(dx_p), sc(dy_p)
+        p.append(f'<feOffset in="{pack_in}" dx="{sx1}" dy="{sy1}" x="0" y="0" width="{s2_w}" height="{s2_h}" result="{tag}_1"/>')
+        for mul in (1, 2):
+            cur, nxt = f"{tag}_{mul}", f"{tag}_{2 * mul}"
+            p.append(f'<feOffset in="{cur}" dx="{mul * sx1}" dy="{mul * sy1}" x="0" y="0" width="{s2_w}" height="{s2_h}" result="{cur}s"/>')
+            p.append(f'<feColorMatrix in="{cur}" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 0 0 1" result="{cur}e"/>')
+            p.append(f'<feComposite in="{cur}e" in2="{cur}s" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="{cur}p"/>')
+            p.append(f'<feColorMatrix in="{cur}" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="1 0 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 1" result="{cur}rg"/>')
+            p.append(f'<feComposite in="{cur}rg" in2="{cur}p" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="{nxt}"/>')
+        c4 = f"{tag}_4"
+        p.append(f'<feOffset in="{c4}" dx="{4 * sx1}" dy="{4 * sy1}" x="0" y="0" width="{s2_w}" height="{s2_h}" result="{c4}s"/>')
+        p.append(f'<feColorMatrix in="{c4}" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="0 0 1 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 1" result="{c4}e"/>')
+        p.append(f'<feComposite in="{c4}e" in2="{c4}s" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="{c4}p"/>')
+        p.append(f'<feComposite in="{c4}" in2="{c4}p" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="{tag}"/>')
+        return tag
+
+    def _emit_s2_1ch_ray(p: List[str], pack_in: str, dx_p: int, dy_p: int, tag: str) -> str:
+        sx1, sy1 = sc(dx_p), sc(dy_p)
+        p.append(f'<feOffset in="{pack_in}" dx="{sx1}" dy="{sy1}" x="0" y="0" width="{s2_w}" height="{s2_h}" result="{tag}_1"/>')
+        for mul in (1, 2):
+            cur, nxt = f"{tag}_{mul}", f"{tag}_{2 * mul}"
+            p.append(f'<feOffset in="{cur}" dx="{mul * sx1}" dy="{mul * sy1}" x="0" y="0" width="{s2_w}" height="{s2_h}" result="{cur}s"/>')
+            p.append(f'<feColorMatrix in="{cur}" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="0 0 1 0 0 0 0 0 0 0 0 0 1 0 0 0 0 0 0 1" result="{cur}e"/>')
+            p.append(f'<feComposite in="{cur}e" in2="{cur}s" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="{cur}p"/>')
+            p.append(f'<feColorMatrix in="{cur}" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="{cur}r"/>')
+            p.append(f'<feComposite in="{cur}r" in2="{cur}p" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="{nxt}"/>')
+        c4 = f"{tag}_4"
+        p.append(f'<feOffset in="{c4}" dx="{4 * sx1}" dy="{4 * sy1}" x="0" y="0" width="{s2_w}" height="{s2_h}" result="{c4}s"/>')
+        p.append(f'<feColorMatrix in="{c4}" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="{c4}e"/>')
+        p.append(f'<feComposite in="{c4}e" in2="{c4}s" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="{c4}p"/>')
+        p.append(f'<feComposite in="{c4}" in2="{c4}p" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="{tag}"/>')
+        return tag
+
+    def _emit_s2_empty_b(p: List[str]) -> None:
+        p.extend([
+            f'<feComponentTransfer in="sb0" x="0" y="0" width="{s2_w}" height="{s2_h}" result="e0"><feFuncR type="table" tableValues="{tbl_eq128}"/><feFuncG type="table" tableValues="{tbl_eq128}"/><feFuncB type="table" tableValues="{tbl_eq128}"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
+            f'<feComponentTransfer in="sb1" x="0" y="0" width="{s2_w}" height="{s2_h}" result="e1"><feFuncR type="table" tableValues="{tbl_eq128}"/><feFuncG type="table" tableValues="{tbl_eq128}"/><feFuncB type="table" tableValues="{tbl_eq128}"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
+            f'<feComposite in="e0" in2="e1" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="e01"/>',
+            f'<feColorMatrix in="e01" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="0 0 0 0 0 0 0 0 0 0 1 1 1 0 -2 0 0 0 0 1" result="emp0"/>',
+            f'<feComposite in="emp0" in2="bmask" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="emp_b"/>',
+        ])
+
+    # `s2m0`: Opponent `P, N, K` attacks (`R`) + `P, N` checkers (`G`) -> `TMP_S2_MATE`
+    pm0: List[str] = [
+        f'<feOffset in="SourceGraphic" dx="{-bm10_x}" dy="{-bm10_y}" x="0" y="0" width="{b10}" height="{b10}" result="bm0"/>',
+        f'<feTile in="bm0" x="0" y="0" width="{s2_w}" height="{s2_h}" result="bmask"/>',
+        f'<feOffset in="SourceGraphic" dx="0" dy="0" x="0" y="0" width="{s2_w}" height="{s2_h}" result="sb0"/>',
+        f'<feOffset in="SourceGraphic" dx="0" dy="{-s2_b1y}" x="0" y="0" width="{s2_w}" height="{s2_h}" result="sb1"/>',
+        f'<feComponentTransfer in="sb0" x="0" y="0" width="{s2_w}" height="{s2_h}" result="ob00"><feFuncR type="table" tableValues="{tbl_eq1}"/><feFuncG type="table" tableValues="{tbl_eq1}"/><feFuncB type="discrete" tableValues="0"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
+        f'<feComposite in="ob00" in2="bmask" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="ob0"/>',
+        f'<feColorMatrix in="sb1" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="0 0 1 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 1" result="sb1_k"/>',
+        f'<feComponentTransfer in="sb1_k" x="0" y="0" width="{s2_w}" height="{s2_h}" result="krg0"><feFuncR type="table" tableValues="{tbl_eq255}"/><feFuncG type="table" tableValues="{tbl_eq1}"/><feFuncB type="discrete" tableValues="0"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
+        f'<feComposite in="krg0" in2="bmask" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="krg"/>',
+        f'<feOffset in="ob0" dx="{sc(1)}" dy="{-sc(1)}" x="0" y="0" width="{s2_w}" height="{s2_h}" result="op_pr"/>',
+        f'<feOffset in="ob0" dx="{-sc(1)}" dy="{-sc(1)}" x="0" y="0" width="{s2_w}" height="{s2_h}" result="op_pl"/>',
+        f'<feComposite in="op_pr" in2="op_pl" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="op_pa"/>',
+        f'<feConvolveMatrix in="ob0" x="0" y="0" width="{s2_w}" height="{s2_h}" order="5 5" targetX="2" targetY="2" divisor="1" bias="0" kernelMatrix="0 1 0 1 0 1 0 0 0 1 0 0 0 0 0 1 0 0 0 1 0 1 0 1 0" edgeMode="none" preserveAlpha="true" result="on_a"/>',
+        f'<feConvolveMatrix in="krg" x="0" y="0" width="{s2_w}" height="{s2_h}" order="3 3" targetX="1" targetY="1" divisor="1" bias="0" kernelMatrix="1 1 1 1 0 1 1 1 1" edgeMode="none" preserveAlpha="true" result="ok_a"/>',
+        f'<feColorMatrix in="op_pa" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="att_pr"/>',
+        f'<feComposite in="on_a" in2="ok_a" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="onk_g"/>',
+        f'<feColorMatrix in="onk_g" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="att_nkr"/>',
+        f'<feComposite in="att_pr" in2="att_nkr" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="att0_r"/>',
+        f'<feOffset in="krg" dx="{sc(1)}" dy="{sc(1)}" x="0" y="0" width="{s2_w}" height="{s2_h}" result="kp_1"/>',
+        f'<feOffset in="krg" dx="{-sc(1)}" dy="{sc(1)}" x="0" y="0" width="{s2_w}" height="{s2_h}" result="kp_2"/>',
+        f'<feComposite in="kp_1" in2="kp_2" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="kp_12"/>',
+        f'<feConvolveMatrix in="krg" x="0" y="0" width="{s2_w}" height="{s2_h}" order="5 5" targetX="2" targetY="2" divisor="1" bias="0" kernelMatrix="0 1 0 1 0 1 0 0 0 1 0 0 0 0 0 1 0 0 0 1 0 1 0 1 0" edgeMode="none" preserveAlpha="true" result="kn_k"/>',
+        f'<feColorMatrix in="kp_12" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="kp_r"/>',
+        f'<feColorMatrix in="kn_k" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="0 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="kn_g"/>',
+        f'<feComposite in="kp_r" in2="kn_g" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="kpn_rg"/>',
+        f'<feComposite in="ob0" in2="kpn_rg" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="cpn_rg"/>',
+        f'<feColorMatrix in="cpn_rg" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="0 0 0 0 0 1 1 0 0 0 0 0 0 0 0 0 0 0 0 1" result="cpn_g"/>',
+        f'<feComposite in="att0_r" in2="cpn_g" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="m0_0"/>',
+        f'<feOffset in="m0_0" dx="0" dy="{tm_y}" x="0" y="{tm_y}" width="{s2_w}" height="{s2_h}" result="m0_out"/>',
+    ]
+    _emit_passthrough(pm0, ["m0_out"])
+    out_filters.append(_wrap_filter(f"ai-s2m0-{dpr}x", pm0))
+
+    # `s2m1..s2m4`: 4 Slider Axes (`H, V, D1, D2`) -> `R = opp_att (+ X-ray)`, `G = chk_sq`, `B = line_kz`
+    for m_idx, (dx_a, dy_a, is_diag) in enumerate(((1, 0, False), (0, 1, False), (1, 1, True), (1, -1, True)), 1):
+        pma: List[str] = [
+            f'<feOffset in="SourceGraphic" dx="{-bm10_x}" dy="{-bm10_y}" x="0" y="0" width="{b10}" height="{b10}" result="bm0"/>',
+            f'<feTile in="bm0" x="0" y="0" width="{s2_w}" height="{s2_h}" result="bmask"/>',
+            f'<feOffset in="SourceGraphic" dx="0" dy="{-tm_y}" x="0" y="0" width="{s2_w}" height="{s2_h}" result="prev_m"/>',
+            f'<feOffset in="SourceGraphic" dx="0" dy="0" x="0" y="0" width="{s2_w}" height="{s2_h}" result="sb0"/>',
+            f'<feOffset in="SourceGraphic" dx="0" dy="{-s2_b1y}" x="0" y="0" width="{s2_w}" height="{s2_h}" result="sb1"/>',
+        ]
+        _emit_s2_empty_b(pma)
+        if not is_diag:
+            pma.extend([
+                f'<feComponentTransfer in="sb1" x="0" y="0" width="{s2_w}" height="{s2_h}" result="ob10"><feFuncR type="table" tableValues="{tbl_eq1}"/><feFuncG type="table" tableValues="{tbl_eq1}"/><feFuncB type="table" tableValues="{tbl_eq255}"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
+                f'<feComposite in="ob10" in2="bmask" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="ob1"/>',
+                f'<feColorMatrix in="ob1" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="1 1 0 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 1" result="sl_k"/>',
+            ])
+        else:
+            pma.extend([
+                f'<feComponentTransfer in="sb0" x="0" y="0" width="{s2_w}" height="{s2_h}" result="ob00"><feFuncR type="discrete" tableValues="0"/><feFuncG type="discrete" tableValues="0"/><feFuncB type="table" tableValues="{tbl_eq1}"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
+                f'<feComponentTransfer in="sb1" x="0" y="0" width="{s2_w}" height="{s2_h}" result="ob10"><feFuncR type="discrete" tableValues="0"/><feFuncG type="table" tableValues="{tbl_eq1}"/><feFuncB type="table" tableValues="{tbl_eq255}"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
+                f'<feColorMatrix in="ob00" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="sl_r0"/>',
+                f'<feColorMatrix in="ob10" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="0 1 0 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 1" result="sl_rg1"/>',
+                f'<feComposite in="sl_r0" in2="sl_rg1" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="sl_k0"/>',
+                f'<feComposite in="sl_k0" in2="bmask" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="sl_k"/>',
+            ])
+        pma.append(f'<feComposite in="sl_k" in2="emp_b" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="pk_ax"/>')
+        rp = _emit_s2_packed_ray(pma, "pk_ax", dx_a, dy_a, "rp")
+        rn = _emit_s2_packed_ray(pma, "pk_ax", -dx_a, -dy_a, "rn")
+        pma.extend([
+            f'<feColorMatrix in="sl_k" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="aik_r"/>',
+            f'<feComposite in="aik_r" in2="{rp}" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="hit_p"/>',
+            f'<feOffset in="hit_p" dx="{sc(dx_a)}" dy="{sc(dy_a)}" x="0" y="0" width="{s2_w}" height="{s2_h}" result="xr_p"/>',
+            f'<feComposite in="aik_r" in2="{rn}" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="hit_n"/>',
+            f'<feOffset in="hit_n" dx="{-sc(dx_a)}" dy="{-sc(dy_a)}" x="0" y="0" width="{s2_w}" height="{s2_h}" result="xr_n"/>',
+            f'<feComposite in="xr_p" in2="xr_n" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="xr_pn"/>',
+            f'<feComposite in="{rp}" in2="{rn}" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="r_sum"/>',
+            f'<feComposite in="r_sum" in2="xr_pn" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="att_ax"/>',
+            f'<feColorMatrix in="att_ax" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="att_r"/>',
+            f'<feColorMatrix in="r_sum" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="0 0 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 1" result="chk_g0"/>',
+            f'<feColorMatrix in="sl_k" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="0 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="opsl_g"/>',
+            f'<feComposite in="chk_g0" in2="opsl_g" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="chk_g"/>',
+            f'<feColorMatrix in="{rn}" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="0 1 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="rn_sw"/>',
+            f'<feComposite in="{rp}" in2="rn_sw" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="pr_rg"/>',
+            f'<feColorMatrix in="pr_rg" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="0 0 0 0 0 0 0 0 0 0 1 1 0 0 0 0 0 0 0 1" result="line_b"/>',
+            f'<feComposite in="att_r" in2="chk_g" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="ax_rg"/>',
+            f'<feComposite in="ax_rg" in2="line_b" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="ax_rgb"/>',
+            f'<feComposite in="prev_m" in2="ax_rgb" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="m_cur"/>',
+            f'<feOffset in="m_cur" dx="0" dy="{tm_y}" x="0" y="{tm_y}" width="{s2_w}" height="{s2_h}" result="ma_out"/>',
+        ])
+        _emit_passthrough(pma, ["ma_out"])
+        out_filters.append(_wrap_filter(f"ai-s2m{m_idx}-{dpr}x", pma))
+
+    # `s2m5`: King Steps + Checker Count Gather -> `(R = unpinned + chk_mode@(0,8), G = 0, B = evade_all)`
+    pm5: List[str] = [
+        f'<feOffset in="SourceGraphic" dx="{-bm10_x}" dy="{-bm10_y}" x="0" y="0" width="{b10}" height="{b10}" result="bm0"/>',
+        f'<feTile in="bm0" x="0" y="0" width="{s2_w}" height="{s2_h}" result="bmask"/>',
+        f'<feOffset in="SourceGraphic" dx="{-csq_x}" dy="{-csq_y}" x="0" y="0" width="{b10}" height="{b10}" result="csq0"/>',
+        f'<feTile in="csq0" x="0" y="0" width="{s2_w}" height="{s2_h}" result="csq"/>',
+        f'<feOffset in="SourceGraphic" dx="0" dy="{-tm_y}" x="0" y="0" width="{s2_w}" height="{s2_h}" result="prev_m"/>',
+        f'<feOffset in="SourceGraphic" dx="0" dy="0" x="0" y="0" width="{s2_w}" height="{s2_h}" result="sb0"/>',
+        f'<feOffset in="SourceGraphic" dx="0" dy="{-s2_b1y}" x="0" y="0" width="{s2_w}" height="{s2_h}" result="sb1"/>',
+    ]
+    _emit_s2_empty_b(pm5)
+    pm5.extend([
+        f'<feComponentTransfer in="sb0" x="0" y="0" width="{s2_w}" height="{s2_h}" result="ab00"><feFuncR type="table" tableValues="{tbl_eq255}"/><feFuncG type="table" tableValues="{tbl_eq255}"/><feFuncB type="table" tableValues="{tbl_eq255}"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
+        f'<feComponentTransfer in="sb1" x="0" y="0" width="{s2_w}" height="{s2_h}" result="ab10"><feFuncR type="table" tableValues="{tbl_eq255}"/><feFuncG type="table" tableValues="{tbl_eq255}"/><feFuncB type="table" tableValues="{tbl_eq255}"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
+        f'<feColorMatrix in="ab00" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="1 1 1 0 0 1 1 1 0 0 1 1 1 0 0 0 0 0 0 1" result="a0s"/>',
+        f'<feColorMatrix in="ab10" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="1 1 1 0 0 1 1 1 0 0 1 1 1 0 0 0 0 0 0 1" result="a1s"/>',
+        f'<feComposite in="a0s" in2="a1s" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="ai_raw"/>',
+        f'<feComposite in="ai_raw" in2="bmask" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="ai_any"/>',
+        f'<feComposite in="ab10" in2="bmask" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="ab1"/>',
+        f'<feConvolveMatrix in="ab1" x="0" y="0" width="{s2_w}" height="{s2_h}" order="3 3" targetX="1" targetY="1" divisor="1" bias="0" kernelMatrix="1 1 1 1 0 1 1 1 1" edgeMode="none" preserveAlpha="true" result="knb0"/>',
+        f'<feColorMatrix in="knb0" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="0 0 0 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 1" result="knb_g"/>',
+        f'<feColorMatrix in="ai_any" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="0 0 0 0 0 -1 0 0 0 1 0 0 0 0 0 0 0 0 0 1" result="nai_g"/>',
+        f'<feColorMatrix in="prev_m" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="0 0 0 0 0 -1 0 0 0 1 0 0 0 0 0 0 0 0 0 1" result="nat_g"/>',
+        f'<feComposite in="knb_g" in2="bmask" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="ks1"/>',
+        f'<feComposite in="ks1" in2="nai_g" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="ks2"/>',
+        f'<feComposite in="ks2" in2="nat_g" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="kst_g"/>',
+        f'<feColorMatrix in="prev_m" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="chk_r"/>',
+        f'<feComposite in="chk_r" in2="kst_g" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="ck_rg"/>',
+        f'<feConvolveMatrix in="ck_rg" x="0" y="0" width="{s2_w}" height="{s2_h}" order="2 2" targetX="0" targetY="0" divisor="2" bias="0" kernelMatrix="1 1 1 1" edgeMode="none" preserveAlpha="true" result="ck_4"/>',
+        f'<feConvolveMatrix in="ck_4" x="0" y="0" width="{s2_w}" height="{s2_h}" order="3 3" targetX="0" targetY="0" divisor="1" bias="0" kernelMatrix="1 0 1 0 0 0 1 0 1" edgeMode="none" preserveAlpha="true" result="ck_2"/>',
+        f'<feConvolveMatrix in="ck_2" x="0" y="0" width="{s2_w}" height="{s2_h}" order="5 5" targetX="0" targetY="0" divisor="1" bias="0" kernelMatrix="1 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0 0 0 1" edgeMode="none" preserveAlpha="true" result="ck_1"/>',
+        f'<feComponentTransfer in="ck_1" x="0" y="0" width="{s2_w}" height="{s2_h}" result="cm_ct"><feFuncR type="table" tableValues="{tbl_chk_r}"/><feFuncG type="table" tableValues="{tbl_lt64}"/><feFuncB type="discrete" tableValues="0"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
+        f'<feColorMatrix in="cm_ct" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="nok_r"/>',
+        f'<feComposite in="cm_ct" in2="nok_r" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="cm0"/>',
+        f'<feComponentTransfer in="csq" x="0" y="0" width="{s2_w}" height="{s2_h}" result="is_00r"><feFuncR type="table" tableValues="{tbl_eq128}"/><feFuncG type="discrete" tableValues="0"/><feFuncB type="discrete" tableValues="0"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
+        f'<feComposite in="cm0" in2="is_00r" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="cm_00"/>',
+        f'<feOffset in="cm_00" dx="0" dy="{sc(8)}" x="0" y="0" width="{s2_w}" height="{s2_h}" result="cm_08"/>',
+        f'<feComposite in="prev_m" in2="ai_any" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="pin_b"/>',
+        f'<feColorMatrix in="pin_b" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="0 0 -1 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="unp0"/>',
+        f'<feComposite in="unp0" in2="bmask" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="unp_r"/>',
+        f'<feComposite in="unp_r" in2="cm_08" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="r_out"/>',
+        f'<feComposite in="prev_m" in2="emp_b" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="int_b"/>',
+        f'<feColorMatrix in="prev_m" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 1 0 0 0 0 0 0 0 1" result="chk_b"/>',
+        f'<feComposite in="int_b" in2="chk_b" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="ev_b"/>',
+        f'<feComposite in="r_out" in2="ev_b" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="m5_0"/>',
+        f'<feOffset in="m5_0" dx="0" dy="{tm_y}" x="0" y="{tm_y}" width="{s2_w}" height="{s2_h}" result="m5_out"/>',
+    ])
+    _emit_passthrough(pm5, ["m5_out"])
+    out_filters.append(_wrap_filter(f"ai-s2m5-{dpr}x", pm5))
+
+    # `s2m6`: Unpinned AI `P` + `N` + `RQ(+1, 0)` Evasion Reach -> `G = def0`
+    pm6: List[str] = [
+        f'<feOffset in="SourceGraphic" dx="{-bm10_x}" dy="{-bm10_y}" x="0" y="0" width="{b10}" height="{b10}" result="bm0"/>',
+        f'<feTile in="bm0" x="0" y="0" width="{s2_w}" height="{s2_h}" result="bmask"/>',
+        f'<feOffset in="SourceGraphic" dx="{-csq_x}" dy="{-csq_y}" x="0" y="0" width="{b10}" height="{b10}" result="csq0"/>',
+        f'<feTile in="csq0" x="0" y="0" width="{s2_w}" height="{s2_h}" result="csq"/>',
+        f'<feOffset in="SourceGraphic" dx="0" dy="{-tm_y}" x="0" y="0" width="{s2_w}" height="{s2_h}" result="prev_m"/>',
+        f'<feOffset in="SourceGraphic" dx="0" dy="0" x="0" y="0" width="{s2_w}" height="{s2_h}" result="sb0"/>',
+        f'<feOffset in="SourceGraphic" dx="0" dy="{-s2_b1y}" x="0" y="0" width="{s2_w}" height="{s2_h}" result="sb1"/>',
+    ]
+    _emit_s2_empty_b(pm6)
+    pm6.extend([
+        f'<feComponentTransfer in="sb0" x="0" y="0" width="{s2_w}" height="{s2_h}" result="ob00"><feFuncR type="table" tableValues="{tbl_eq1}"/><feFuncG type="table" tableValues="{tbl_eq1}"/><feFuncB type="table" tableValues="{tbl_eq1}"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
+        f'<feComponentTransfer in="sb1" x="0" y="0" width="{s2_w}" height="{s2_h}" result="ob10"><feFuncR type="table" tableValues="{tbl_eq1}"/><feFuncG type="table" tableValues="{tbl_eq1}"/><feFuncB type="table" tableValues="{tbl_eq1}"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
+        f'<feComposite in="ob00" in2="ob10" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="o01"/>',
+        f'<feColorMatrix in="o01" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="1 1 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="op_r0"/>',
+        f'<feComposite in="op_r0" in2="bmask" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="op_r"/>',
+        f'<feColorMatrix in="prev_m" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 0 0 0 0 1" result="unp0"/>',
+        f'<feComposite in="unp0" in2="bmask" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="unp"/>',
+        f'<feComponentTransfer in="sb0" x="0" y="0" width="{s2_w}" height="{s2_h}" result="ab00"><feFuncR type="table" tableValues="{tbl_eq255}"/><feFuncG type="table" tableValues="{tbl_eq255}"/><feFuncB type="discrete" tableValues="0"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
+        f'<feComposite in="ab00" in2="unp" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="u_pn"/>',
+        f'<feComponentTransfer in="sb1" x="0" y="0" width="{s2_w}" height="{s2_h}" result="ab10"><feFuncR type="table" tableValues="{tbl_eq255}"/><feFuncG type="table" tableValues="{tbl_eq255}"/><feFuncB type="discrete" tableValues="0"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
+        f'<feComposite in="ab10" in2="unp" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="u_rq0"/>',
+        f'<feColorMatrix in="u_rq0" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="1 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="u_rq"/>',
+        f'<feColorMatrix in="emp_b" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="emp_r"/>',
+        f'<feOffset in="u_pn" dx="0" dy="{sc(1)}" x="0" y="0" width="{s2_w}" height="{s2_h}" result="p1_0"/>',
+        f'<feComposite in="p1_0" in2="emp_r" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="p1"/>',
+        f'<feComponentTransfer in="csq" x="0" y="0" width="{s2_w}" height="{s2_h}" result="is_r2"><feFuncR type="table" tableValues="{tbl_is_r2}"/><feFuncG type="discrete" tableValues="0"/><feFuncB type="discrete" tableValues="0"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
+        f'<feComposite in="p1" in2="is_r2" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="p1_r2"/>',
+        f'<feOffset in="p1_r2" dx="0" dy="{sc(1)}" x="0" y="0" width="{s2_w}" height="{s2_h}" result="p2_0"/>',
+        f'<feComposite in="p2_0" in2="emp_r" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="p2"/>',
+        f'<feOffset in="u_pn" dx="{sc(1)}" dy="{sc(1)}" x="0" y="0" width="{s2_w}" height="{s2_h}" result="pc_1"/>',
+        f'<feOffset in="u_pn" dx="{-sc(1)}" dy="{sc(1)}" x="0" y="0" width="{s2_w}" height="{s2_h}" result="pc_2"/>',
+        f'<feComposite in="pc_1" in2="pc_2" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="pc_12"/>',
+        f'<feComposite in="pc_12" in2="op_r" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="pc"/>',
+        f'<feComposite in="p1" in2="p2" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="p_12"/>',
+        f'<feComposite in="p_12" in2="pc" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="p_all"/>',
+        f'<feConvolveMatrix in="u_pn" x="0" y="0" width="{s2_w}" height="{s2_h}" order="5 5" targetX="2" targetY="2" divisor="1" bias="0" kernelMatrix="0 1 0 1 0 1 0 0 0 1 0 0 0 0 0 1 0 0 0 1 0 1 0 1 0" edgeMode="none" preserveAlpha="true" result="n_att"/>',
+        f'<feColorMatrix in="n_att" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="n_r"/>',
+        f'<feComposite in="p_all" in2="n_r" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="pn_r"/>',
+        f'<feComposite in="u_rq" in2="emp_b" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="rq_pk"/>',
+    ])
+    m6_r0 = _emit_s2_1ch_ray(pm6, "rq_pk", 1, 0, "m6r0")
+    pm6.extend([
+        f'<feComposite in="pn_r" in2="{m6_r0}" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="rch0"/>',
+        f'<feColorMatrix in="rch0" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="0 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="rch_g"/>',
+        f'<feColorMatrix in="prev_m" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="0 0 0 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 1" result="ev_g"/>',
+        f'<feComposite in="rch_g" in2="ev_g" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="def_g"/>',
+        f'<feComposite in="prev_m" in2="def_g" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="m6_0"/>',
+        f'<feOffset in="m6_0" dx="0" dy="{tm_y}" x="0" y="{tm_y}" width="{s2_w}" height="{s2_h}" result="m6_out"/>',
+    ])
+    _emit_passthrough(pm6, ["m6_out"])
+    out_filters.append(_wrap_filter(f"ai-s2m6-{dpr}x", pm6))
+
+    # `s2m7`: Unpinned AI `RQ` Rays `(-1, 0), (0, +1), (0, -1)` -> `G |= def1`
+    pm7: List[str] = [
+        f'<feOffset in="SourceGraphic" dx="{-bm10_x}" dy="{-bm10_y}" x="0" y="0" width="{b10}" height="{b10}" result="bm0"/>',
+        f'<feTile in="bm0" x="0" y="0" width="{s2_w}" height="{s2_h}" result="bmask"/>',
+        f'<feOffset in="SourceGraphic" dx="0" dy="{-tm_y}" x="0" y="0" width="{s2_w}" height="{s2_h}" result="prev_m"/>',
+        f'<feOffset in="SourceGraphic" dx="0" dy="0" x="0" y="0" width="{s2_w}" height="{s2_h}" result="sb0"/>',
+        f'<feOffset in="SourceGraphic" dx="0" dy="{-s2_b1y}" x="0" y="0" width="{s2_w}" height="{s2_h}" result="sb1"/>',
+    ]
+    _emit_s2_empty_b(pm7)
+    pm7.extend([
+        f'<feColorMatrix in="prev_m" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="1 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="unp0"/>',
+        f'<feComposite in="unp0" in2="bmask" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="unp"/>',
+        f'<feComponentTransfer in="sb1" x="0" y="0" width="{s2_w}" height="{s2_h}" result="ab10"><feFuncR type="table" tableValues="{tbl_eq255}"/><feFuncG type="table" tableValues="{tbl_eq255}"/><feFuncB type="discrete" tableValues="0"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
+        f'<feComposite in="ab10" in2="unp" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="u_rq0"/>',
+        f'<feColorMatrix in="u_rq0" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="1 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="u_rq"/>',
+        f'<feComposite in="u_rq" in2="emp_b" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="rq_pk"/>',
+    ])
+    m7_r1 = _emit_s2_1ch_ray(pm7, "rq_pk", -1, 0, "m7r1")
+    m7_r2 = _emit_s2_1ch_ray(pm7, "rq_pk", 0, 1, "m7r2")
+    m7_r3 = _emit_s2_1ch_ray(pm7, "rq_pk", 0, -1, "m7r3")
+    pm7.extend([
+        f'<feComposite in="{m7_r1}" in2="{m7_r2}" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="r12"/>',
+        f'<feComposite in="r12" in2="{m7_r3}" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="rch1"/>',
+        f'<feColorMatrix in="rch1" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="0 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="rch_g"/>',
+        f'<feColorMatrix in="prev_m" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="0 0 0 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 1" result="ev_g"/>',
+        f'<feComposite in="rch_g" in2="ev_g" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="def_g"/>',
+        f'<feComposite in="prev_m" in2="def_g" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="m7_0"/>',
+        f'<feOffset in="m7_0" dx="0" dy="{tm_y}" x="0" y="{tm_y}" width="{s2_w}" height="{s2_h}" result="m7_out"/>',
+    ])
+    _emit_passthrough(pm7, ["m7_out"])
+    out_filters.append(_wrap_filter(f"ai-s2m7-{dpr}x", pm7))
+
+    # `s2m8`: Unpinned AI `BQ` Diag Rays `(+1,+1), (-1,-1), (+1,-1)` -> `G |= def2`
+    def _emit_s2_ubq_setup(p: List[str]) -> None:
+        p.extend([
+            f'<feOffset in="SourceGraphic" dx="{-bm10_x}" dy="{-bm10_y}" x="0" y="0" width="{b10}" height="{b10}" result="bm0"/>',
+            f'<feTile in="bm0" x="0" y="0" width="{s2_w}" height="{s2_h}" result="bmask"/>',
+            f'<feOffset in="SourceGraphic" dx="0" dy="{-tm_y}" x="0" y="0" width="{s2_w}" height="{s2_h}" result="prev_m"/>',
+            f'<feOffset in="SourceGraphic" dx="0" dy="0" x="0" y="0" width="{s2_w}" height="{s2_h}" result="sb0"/>',
+            f'<feOffset in="SourceGraphic" dx="0" dy="{-s2_b1y}" x="0" y="0" width="{s2_w}" height="{s2_h}" result="sb1"/>',
+        ])
+        _emit_s2_empty_b(p)
+        p.extend([
+            f'<feColorMatrix in="prev_m" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 0 0 0 0 1" result="unp0"/>',
+            f'<feComposite in="unp0" in2="bmask" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="unp"/>',
+            f'<feComponentTransfer in="sb0" x="0" y="0" width="{s2_w}" height="{s2_h}" result="ab00"><feFuncR type="discrete" tableValues="0"/><feFuncG type="discrete" tableValues="0"/><feFuncB type="table" tableValues="{tbl_eq255}"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
+            f'<feComponentTransfer in="sb1" x="0" y="0" width="{s2_w}" height="{s2_h}" result="ab10"><feFuncR type="discrete" tableValues="0"/><feFuncG type="table" tableValues="{tbl_eq255}"/><feFuncB type="discrete" tableValues="0"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
+            f'<feComposite in="ab00" in2="ab10" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="bq0"/>',
+            f'<feComposite in="bq0" in2="unp" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="ubq0"/>',
+            f'<feColorMatrix in="ubq0" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="0 1 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="u_bq"/>',
+            f'<feComposite in="u_bq" in2="emp_b" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="bq_pk"/>',
+        ])
+
+    pm8: List[str] = []
+    _emit_s2_ubq_setup(pm8)
+    m8_d0 = _emit_s2_1ch_ray(pm8, "bq_pk", 1, 1, "m8d0")
+    m8_d1 = _emit_s2_1ch_ray(pm8, "bq_pk", -1, -1, "m8d1")
+    m8_d2 = _emit_s2_1ch_ray(pm8, "bq_pk", 1, -1, "m8d2")
+    pm8.extend([
+        f'<feComposite in="{m8_d0}" in2="{m8_d1}" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="d01"/>',
+        f'<feComposite in="d01" in2="{m8_d2}" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="rch2"/>',
+        f'<feColorMatrix in="rch2" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="0 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="rch_g"/>',
+        f'<feColorMatrix in="prev_m" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="0 0 0 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 1" result="ev_g"/>',
+        f'<feComposite in="rch_g" in2="ev_g" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="def_g"/>',
+        f'<feComposite in="prev_m" in2="def_g" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="m8_0"/>',
+        f'<feOffset in="m8_0" dx="0" dy="{tm_y}" x="0" y="{tm_y}" width="{s2_w}" height="{s2_h}" result="m8_out"/>',
+    ])
+    _emit_passthrough(pm8, ["m8_out"])
+    out_filters.append(_wrap_filter(f"ai-s2m8-{dpr}x", pm8))
+
+    # `s2m9`: Final `BQ` Diag Ray `(-1, +1)` -> `G = def_all`
+    pm9: List[str] = []
+    _emit_s2_ubq_setup(pm9)
+    m9_d3 = _emit_s2_1ch_ray(pm9, "bq_pk", -1, 1, "m9d3")
+    pm9.extend([
+        f'<feColorMatrix in="{m9_d3}" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="0 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="rch_g"/>',
+        f'<feColorMatrix in="prev_m" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="0 0 0 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 1" result="ev_g"/>',
+        f'<feComposite in="rch_g" in2="ev_g" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="def_g"/>',
+        f'<feComposite in="prev_m" in2="def_g" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="m9_0"/>',
+        f'<feOffset in="m9_0" dx="0" dy="{tm_y}" x="0" y="{tm_y}" width="{s2_w}" height="{s2_h}" result="m9_out"/>',
+    ])
+    _emit_passthrough(pm9, ["m9_out"])
+    out_filters.append(_wrap_filter(f"ai-s2m9-{dpr}x", pm9))
+
+    # `s2m10`: Gather `def_all` + Combine w/ `chk_mode` + Compact `10->2` into `VRAM_META_C2.B`!
+    pm10: List[str] = [
+        f'<feOffset in="SourceGraphic" dx="{-csq_x}" dy="{-csq_y}" x="0" y="0" width="{b10}" height="{b10}" result="csq0"/>',
+        f'<feTile in="csq0" x="0" y="0" width="{s2_w}" height="{s2_h}" result="csq"/>',
+        f'<feOffset in="SourceGraphic" dx="0" dy="{-tm_y}" x="0" y="0" width="{s2_w}" height="{s2_h}" result="prev_m"/>',
+        f'<feColorMatrix in="prev_m" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="0 0 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 1" result="def_g0"/>',
+        f'<feConvolveMatrix in="def_g0" x="0" y="0" width="{s2_w}" height="{s2_h}" order="2 2" targetX="0" targetY="0" divisor="2" bias="0" kernelMatrix="1 1 1 1" edgeMode="none" preserveAlpha="true" result="dg_4"/>',
+        f'<feConvolveMatrix in="dg_4" x="0" y="0" width="{s2_w}" height="{s2_h}" order="3 3" targetX="0" targetY="0" divisor="1" bias="0" kernelMatrix="1 0 1 0 0 0 1 0 1" edgeMode="none" preserveAlpha="true" result="dg_2"/>',
+        f'<feConvolveMatrix in="dg_2" x="0" y="0" width="{s2_w}" height="{s2_h}" order="5 5" targetX="0" targetY="0" divisor="1" bias="0" kernelMatrix="1 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0 0 0 1" edgeMode="none" preserveAlpha="true" result="dg_1"/>',
+        f'<feOffset in="prev_m" dx="0" dy="{-sc(8)}" x="0" y="0" width="{s2_w}" height="{s2_h}" result="cm_sh"/>',
+        f'<feColorMatrix in="cm_sh" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="1 0 0 0 0 0 0 0 0 0 1 0 0 0 0 0 0 0 0 1" result="cm_rb"/>',
+        f'<feComposite in="cm_rb" in2="dg_1" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="cd_rgb"/>',
+        f'<feComponentTransfer in="cd_rgb" x="0" y="0" width="{s2_w}" height="{s2_h}" result="cd_ct"><feFuncR type="table" tableValues="{tbl_ge192}"/><feFuncG type="table" tableValues="{tbl_lt64}"/><feFuncB type="table" tableValues="{tbl_64_191}"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
+        f'<feColorMatrix in="cd_ct" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 1 0 0 0 0 0 0 0 1" result="ndf_b"/>',
+        f'<feComposite in="cd_ct" in2="ndf_b" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="sm_b"/>',
+        f'<feColorMatrix in="cd_ct" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="0 0 0 0 0 0 0 0 0 0 1 0 0 0 0 0 0 0 0 1" result="dbl_b"/>',
+        f'<feComposite in="sm_b" in2="dbl_b" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="mt_raw"/>',
+        f'<feComponentTransfer in="csq" x="0" y="0" width="{s2_w}" height="{s2_h}" result="is_00b"><feFuncR type="discrete" tableValues="0"/><feFuncG type="discrete" tableValues="0"/><feFuncB type="table" tableValues="{tbl_eq128}"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
+        f'<feComposite in="mt_raw" in2="is_00b" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="mt_00"/>',
+        f'<feConvolveMatrix in="mt_00" x="0" y="0" width="{s2_w}" height="{s2_h}" order="5 5" targetX="4" targetY="4" divisor="1" bias="0" kernelMatrix="1 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0 0 0 1" edgeMode="none" preserveAlpha="true" result="mt_sm"/>',
+        f'<feOffset in="SourceGraphic" dx="{-c10x_x}" dy="{-c10x_y}" x="0" y="0" width="{sc(28)}" height="{sc(4)}" result="c10x0"/>',
+        f'<feTile in="c10x0" x="0" y="0" width="{c2_w}" height="{s2_h}" result="c10x_t"/>',
+        f'<feOffset in="SourceGraphic" dx="{-c10y_x}" dy="{-c10y_y}" x="0" y="0" width="{sc(4)}" height="{sc(16)}" result="c10y0"/>',
+        f'<feTile in="c10y0" x="0" y="0" width="{c2_w}" height="{c2_h}" result="c10y_t"/>',
+    ]
+    _emit_compact_at_origin(
+        pm10, "mt_sm", 0, 0, s2_h, 0, 0, c2_w, c2_h,
+        x_slices_10_2, y_slices_10_2, "c10x_t", "c10y_t", a_sh, disp_s, "mt_c2_0",
+    )
+    pm10.extend([
+        f'<feOffset in="SourceGraphic" dx="{-mc2_x}" dy="{-mc2_y}" x="0" y="0" width="{c2_w}" height="{c2_h}" result="prev_mc2"/>',
+        f'<feComposite in="prev_mc2" in2="mt_c2_0" x="0" y="0" width="{c2_w}" height="{c2_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="mc2_u0"/>',
+        f'<feOffset in="mc2_u0" dx="{mc2_x}" dy="{mc2_y}" x="{mc2_x}" y="{mc2_y}" width="{c2_w}" height="{c2_h}" result="meta_c2_fin"/>',
+    ])
+    _emit_passthrough(pm10, ["meta_c2_fin"])
+    out_filters.append(_wrap_filter(f"ai-s2m10-{dpr}x", pm10))
+
+    # =========================================================================
     # Stages `s2b, s2c, s2d`: CNN Layer 1 (`mix1 -> bmask10 -> dwconv1 -> pool1 -> C6`) + `skip_mat`
     # =========================================================================
     c6_w, c6_h = sc(384), sc(96)
@@ -1967,9 +2495,10 @@ def compile_chess_ai_filters(spec: dict, dpr: int) -> List[str]:
         ])
         for c_off, sfx in enumerate(("r", "g", "b")):
             f = flts1[3 * o + c_off]
+            ord_s = f"{int(f['order'][0])} {int(f['order'][1])}"
             p.append(
                 f'<feConvolveMatrix in="m1m_{o}" x="0" y="0" width="{s2_w}" height="{s2_h}" '
-                f'order="3 3" targetX="1" targetY="1" divisor="1" bias="{_fmt_num(f["bias"])}" '
+                f'order="{ord_s}" targetX="{int(f["targetX"])}" targetY="{int(f["targetY"])}" divisor="1" bias="{_fmt_num(f["bias"])}" '
                 f'kernelMatrix="{_fmt_list(f["kernelMatrix"])}" edgeMode="none" preserveAlpha="true" result="d1_{o}{sfx}"/>'
             )
         _pack_rgb(p, f"d1_{o}r", f"d1_{o}g", f"d1_{o}b", 0, 0, s2_w, s2_h, f"d1g_{o}")
@@ -1986,6 +2515,9 @@ def compile_chess_ai_filters(spec: dict, dpr: int) -> List[str]:
             x_slices_10_6, None, "c6x_t", "c6y_t", a_sh, disp_s, out_nm,
         )
         return out_nm
+
+    g1_cnt = len(m1_trips)
+    assert g1_cnt in (5, 6)
 
     p2b: List[str] = []
     _emit_l1_shared(p2b)
@@ -2013,29 +2545,48 @@ def compile_chess_ai_filters(spec: dict, dpr: int) -> List[str]:
     sk_st0, sk_st1, sk_st2 = sk_spec["sum_stages"]
     nz0_sk = _fmt_num(-float(sk_spec["zero_point"]))
 
-    p2d: List[str] = []
-    _emit_l1_shared(p2d)
-    o4 = _emit_l1_triplet(p2d, 4, VRAM_P1_C6_4)
-    p2d.extend([
-        f'<feColorMatrix in="in_b0" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="{_fmt_list(sk_cm0)}" result="sk0"/>',
-        f'<feColorMatrix in="in_b1" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="{_fmt_list(sk_cm1)}" result="sk1"/>',
-        f'<feComposite in="sk0" in2="sk1" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="{nz0_sk}" result="sk_8"/>',
-        f'<feConvolveMatrix in="sk_8" x="0" y="0" width="{s2_w}" height="{s2_h}" order="2 2" targetX="0" targetY="0" divisor="{_fmt_num(sk_st0["divisor"])}" bias="{_fmt_num(sk_st0["bias"])}" kernelMatrix="1 1 1 1" edgeMode="none" preserveAlpha="true" result="sk_4"/>',
-        f'<feConvolveMatrix in="sk_4" x="0" y="0" width="{s2_w}" height="{s2_h}" order="3 3" targetX="0" targetY="0" divisor="{_fmt_num(sk_st1["divisor"])}" bias="{_fmt_num(sk_st1["bias"])}" kernelMatrix="1 0 1 0 0 0 1 0 1" edgeMode="none" preserveAlpha="true" result="sk_2"/>',
-        f'<feOffset in="SourceGraphic" dx="{-c10x_x}" dy="{-c10x_y}" x="0" y="0" width="{sc(28)}" height="{sc(4)}" result="c10x0"/>',
-        f'<feTile in="c10x0" x="0" y="0" width="{c2_w}" height="{s2_h}" result="c10x_t"/>',
-        f'<feOffset in="SourceGraphic" dx="{-c10y_x}" dy="{-c10y_y}" x="0" y="0" width="{sc(4)}" height="{sc(16)}" result="c10y0"/>',
-        f'<feTile in="c10y0" x="0" y="0" width="{c2_w}" height="{c2_h}" result="c10y_t"/>',
-    ])
-    _emit_compact_at_origin(
-        p2d, "sk_2", 0, 0, s2_h, skc2_x, skc2_y, c2_w, c2_h,
-        x_slices_10_2, y_slices_10_2, "c10x_t", "c10y_t", a_sh, disp_s, "skip_c2",
-    )
-    _emit_passthrough(p2d, [o4, "skip_c2"])
-    out_filters.append(_wrap_filter(f"ai-s2d-{dpr}x", p2d))
+    def _emit_skip_c2(p: List[str]) -> None:
+        p.extend([
+            f'<feColorMatrix in="in_b0" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="{_fmt_list(sk_cm0)}" result="sk0"/>',
+            f'<feColorMatrix in="in_b1" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="{_fmt_list(sk_cm1)}" result="sk1"/>',
+            f'<feComposite in="sk0" in2="sk1" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="{nz0_sk}" result="sk_8"/>',
+            f'<feConvolveMatrix in="sk_8" x="0" y="0" width="{s2_w}" height="{s2_h}" order="2 2" targetX="0" targetY="0" divisor="{_fmt_num(sk_st0["divisor"])}" bias="{_fmt_num(sk_st0["bias"])}" kernelMatrix="1 1 1 1" edgeMode="none" preserveAlpha="true" result="sk_4"/>',
+            f'<feConvolveMatrix in="sk_4" x="0" y="0" width="{s2_w}" height="{s2_h}" order="3 3" targetX="0" targetY="0" divisor="{_fmt_num(sk_st1["divisor"])}" bias="{_fmt_num(sk_st1["bias"])}" kernelMatrix="1 0 1 0 0 0 1 0 1" edgeMode="none" preserveAlpha="true" result="sk_2"/>',
+            f'<feOffset in="SourceGraphic" dx="{-c10x_x}" dy="{-c10x_y}" x="0" y="0" width="{sc(28)}" height="{sc(4)}" result="c10x0"/>',
+            f'<feTile in="c10x0" x="0" y="0" width="{c2_w}" height="{s2_h}" result="c10x_t"/>',
+            f'<feOffset in="SourceGraphic" dx="{-c10y_x}" dy="{-c10y_y}" x="0" y="0" width="{sc(4)}" height="{sc(16)}" result="c10y0"/>',
+            f'<feTile in="c10y0" x="0" y="0" width="{c2_w}" height="{c2_h}" result="c10y_t"/>',
+        ])
+        _emit_compact_at_origin(
+            p, "sk_2", 0, 0, s2_h, skc2_x, skc2_y, c2_w, c2_h,
+            x_slices_10_2, y_slices_10_2, "c10x_t", "c10y_t", a_sh, disp_s, "skip_c2",
+        )
+
+    if g1_cnt == 5:
+        p2d: List[str] = []
+        _emit_l1_shared(p2d)
+        o4 = _emit_l1_triplet(p2d, 4, VRAM_P1_C6_4)
+        _emit_skip_c2(p2d)
+        _emit_passthrough(p2d, [o4, "skip_c2"])
+        out_filters.append(_wrap_filter(f"ai-s2d-{dpr}x", p2d))
+    else:
+        p2d = [
+            f'<feOffset in="SourceGraphic" dx="0" dy="0" x="0" y="0" width="{s2_w}" height="{s2_h}" result="in_b0"/>',
+            f'<feOffset in="SourceGraphic" dx="0" dy="{-s2_b1y}" x="0" y="0" width="{s2_w}" height="{s2_h}" result="in_b1"/>',
+        ]
+        _emit_skip_c2(p2d)
+        _emit_passthrough(p2d, ["skip_c2"])
+        out_filters.append(_wrap_filter(f"ai-s2d-{dpr}x", p2d))
+
+        p2e: List[str] = []
+        _emit_l1_shared(p2e)
+        o4 = _emit_l1_triplet(p2e, 4, VRAM_P1_C6_4)
+        o5 = _emit_l1_triplet(p2e, 5, VRAM_P1_C6_5)
+        _emit_passthrough(p2e, [o4, o5])
+        out_filters.append(_wrap_filter(f"ai-s2e-{dpr}x", p2e))
 
     # =========================================================================
-    # Stages `s3a, s3b, s3c`: CNN Layer 2 (`mix2 -> bmask6 -> dwconv2 -> pool2 -> C2`)
+    # Stages `s3*`: CNN Layer 2 (`mix2 -> bmask6 -> dwconv2 -> pool2 -> C2`)
     # =========================================================================
     c2x_x, c2x_y = LUT_C2X_POS
     c2y_x, c2y_y = LUT_C2Y_POS
@@ -2048,8 +2599,12 @@ def compile_chess_ai_filters(spec: dict, dpr: int) -> List[str]:
     flts2 = ly["dwconv2"]["filters"]
     p2_div = _fmt_num(ly["pool2"]["divisor"])
     nz0_m2 = _fmt_num(-float(ly["mix2"]["zero_point"]))
+    g2_cnt = len(m2_trips)
+    s3_step = 2 if g1_cnt <= 5 else 1
 
-    for sfx, o_pair in (("a", (0, 1)), ("b", (2, 3)), ("c", (4, 5))):
+    for s_idx, o0_idx in enumerate(range(0, g2_cnt, s3_step)):
+        sfx = chr(ord("a") + s_idx)
+        o_pair = range(o0_idx, min(g2_cnt, o0_idx + s3_step))
         p3: List[str] = [
             f'<feOffset in="SourceGraphic" dx="0" dy="{-sc(VRAM_P1_C6_0[1])}" x="0" y="0" width="{c6_w}" height="{c6_h}" result="p1_in0"/>',
             f'<feOffset in="SourceGraphic" dx="0" dy="{-sc(VRAM_P1_C6_1[1])}" x="0" y="0" width="{c6_w}" height="{c6_h}" result="p1_in1"/>',
@@ -2058,13 +2613,19 @@ def compile_chess_ai_filters(spec: dict, dpr: int) -> List[str]:
             f'<feOffset in="SourceGraphic" dx="{hw6 - g3rx}" dy="{-g3ry}" x="{hw6}" y="0" width="{hw6}" height="{c6_h}" result="g3R"/>',
             f'<feMerge x="0" y="0" width="{c6_w}" height="{c6_h}" result="p1_in3"><feMergeNode in="g3L"/><feMergeNode in="g3R"/></feMerge>',
             f'<feOffset in="SourceGraphic" dx="0" dy="0" x="0" y="0" width="{c6_w}" height="{c6_h}" result="p1_in4"/>',
+        ]
+        if g1_cnt == 6:
+            p3.append(
+                f'<feOffset in="SourceGraphic" dx="0" dy="{-sc(VRAM_P1_C6_5[1])}" x="0" y="0" width="{c6_w}" height="{c6_h}" result="p1_in5"/>'
+            )
+        p3.extend([
             f'<feOffset in="SourceGraphic" dx="{-bm6_x}" dy="{-bm6_y}" x="0" y="0" width="{b6}" height="{b6}" result="bm6_0"/>',
             f'<feTile in="bm6_0" x="0" y="0" width="{c6_w}" height="{c6_h}" result="bm6"/>',
             f'<feOffset in="SourceGraphic" dx="{-c2x_x}" dy="{-c2x_y}" x="0" y="0" width="{sc(44)}" height="{sc(4)}" result="c2x0"/>',
             f'<feTile in="c2x0" x="0" y="0" width="{c2_w}" height="{c6_h}" result="c2x_t"/>',
             f'<feOffset in="SourceGraphic" dx="{-c2y_x}" dy="{-c2y_y}" x="0" y="0" width="{sc(4)}" height="{c2_h}" result="c2y0"/>',
             f'<feTile in="c2y0" x="0" y="0" width="{c2_w}" height="{c2_h}" result="c2y_t"/>',
-        ]
+        ])
         s3_outs: List[str] = []
         for o in o_pair:
             trip = m2_trips[o]
@@ -2088,9 +2649,10 @@ def compile_chess_ai_filters(spec: dict, dpr: int) -> List[str]:
             ])
             for c_off, csfx in enumerate(("r", "g", "b")):
                 f = flts2[3 * o + c_off]
+                ord2_s = f"{int(f['order'][0])} {int(f['order'][1])}"
                 p3.append(
                     f'<feConvolveMatrix in="m2m_{o}" x="0" y="0" width="{c6_w}" height="{c6_h}" '
-                    f'order="3 3" targetX="1" targetY="1" divisor="1" bias="{_fmt_num(f["bias"])}" '
+                    f'order="{ord2_s}" targetX="{int(f["targetX"])}" targetY="{int(f["targetY"])}" divisor="1" bias="{_fmt_num(f["bias"])}" '
                     f'kernelMatrix="{_fmt_list(f["kernelMatrix"])}" edgeMode="none" preserveAlpha="true" result="d2_{o}{csfx}"/>'
                 )
             _pack_rgb(p3, f"d2_{o}r", f"d2_{o}g", f"d2_{o}b", 0, 0, c6_w, c6_h, f"d2g_{o}")
@@ -2110,14 +2672,18 @@ def compile_chess_ai_filters(spec: dict, dpr: int) -> List[str]:
         out_filters.append(_wrap_filter(f"ai-s3{sfx}-{dpr}x", p3))
 
     # =========================================================================
-    # Stages `s4a, s4b`: CNN Layer 3a `mix3` (`6 -> 8` triplets on `128 x 32`)
+    # Stages `s4m*`: CNN Layer 3a `mix3` (`G2 -> G3` triplets on `128 x 32`)
     # =========================================================================
     m3_trips = ly["mix3"]["triplets"]
     nz0_m3 = _fmt_num(-float(ly["mix3"]["zero_point"]))
-    for sfx, o_range in (("a", range(0, 4)), ("b", range(4, 8))):
+    g3_cnt = len(m3_trips)
+    m3_step = 4 if g2_cnt <= 6 else 3
+
+    for m_idx, o0_idx in enumerate(range(0, g3_cnt, m3_step)):
+        o_range = range(o0_idx, min(g3_cnt, o0_idx + m3_step))
         p4ab: List[str] = [
             f'<feOffset in="SourceGraphic" dx="{-sc(VRAM_P2_C2[g][0])}" dy="{-sc(VRAM_P2_C2[g][1])}" x="0" y="0" width="{c2_w}" height="{c2_h}" result="p2_in{g}"/>'
-            for g in range(6)
+            for g in range(g2_cnt)
         ]
         s4_outs: List[str] = []
         for o in o_range:
@@ -2145,10 +2711,10 @@ def compile_chess_ai_filters(spec: dict, dpr: int) -> List[str]:
                 p4ab.append(f'<feOffset in="{raw_nm}" dx="{dx_o}" dy="{dy_o}" x="{dx_o}" y="{dy_o}" width="{c2_w}" height="{c2_h}" result="m3g_{o}"/>')
             s4_outs.append(f"m3g_{o}")
         _emit_passthrough(p4ab, s4_outs)
-        out_filters.append(_wrap_filter(f"ai-s4{sfx}-{dpr}x", p4ab))
+        out_filters.append(_wrap_filter(f"ai-s4m{m_idx}-{dpr}x", p4ab))
 
     # =========================================================================
-    # Stages `s4c, s4d`: CNN Layer 3b `dwconv3` (`2x2 -> 1x1`) + `META_C1` & `SKIP_C1`
+    # Stages `s4d*`: CNN Layer 3b `dwconv3` (`2x2 -> 1x1`) + `META_C1` & `SKIP_C1`
     # =========================================================================
     c1_w, c1_h = sc(64), sc(16)
     c1x_x, c1x_y = LUT_C1X_POS
@@ -2156,7 +2722,8 @@ def compile_chess_ai_filters(spec: dict, dpr: int) -> List[str]:
     x_slices_2_1 = [(sc(0), sc(0), c2_w, c1_w)]
     flts3 = ly["dwconv3"]["filters"]
 
-    for sfx, g_range in (("c", range(0, 4)), ("d", range(4, 8))):
+    for d_idx, g0_idx in enumerate(range(0, g3_cnt, 4)):
+        g_range = range(g0_idx, min(g3_cnt, g0_idx + 4))
         p4cd: List[str] = [
             f'<feOffset in="SourceGraphic" dx="{-c1x_x}" dy="{-c1x_y}" x="0" y="0" width="{c1_w}" height="{sc(4)}" result="c1x0"/>',
             f'<feTile in="c1x0" x="0" y="0" width="{c1_w}" height="{c2_h}" result="c1x_t"/>',
@@ -2183,14 +2750,14 @@ def compile_chess_ai_filters(spec: dict, dpr: int) -> List[str]:
             )
             s4_outs.append(out_nm)
 
-        if sfx == "c":
+        if d_idx == 0:
             nm_dx, nm_dy = sc(VRAM_NOM2_C1[0]), sc(VRAM_NOM2_C1[1])
             _emit_compact_at_origin(
                 p4cd, "SourceGraphic", mc2_x, mc2_y, c2_h, nm_dx, nm_dy, c1_w, c1_h,
                 x_slices_2_1, None, "c1x_t", "c1y_t", a_sh, disp_s, "nom2_c1",
             )
             s4_outs.append("nom2_c1")
-        else:
+        elif d_idx == 1:
             p4cd.extend([
                 f'<feOffset in="SourceGraphic" dx="{-skc2_x}" dy="{-skc2_y}" x="0" y="0" width="{c2_w}" height="{c2_h}" result="sk_in2"/>',
                 f'<feConvolveMatrix in="sk_in2" x="0" y="0" width="{c2_w}" height="{c2_h}" '
@@ -2205,14 +2772,15 @@ def compile_chess_ai_filters(spec: dict, dpr: int) -> List[str]:
             s4_outs.append("skip_c1")
 
         _emit_passthrough(p4cd, s4_outs)
-        out_filters.append(_wrap_filter(f"ai-s4{sfx}-{dpr}x", p4cd))
+        out_filters.append(_wrap_filter(f"ai-s4d{d_idx}-{dpr}x", p4cd))
 
     # =========================================================================
-    # Stage `s5a`: Value Head (`27 -> 1`) + Sigmoid LUT + 2-Ply Minimax (`erode` + `dilate`)
+    # Stage `s5v`: Value Head (`(3*G3 + 3) -> 1`) + Sigmoid LUT -> `VRAM_VSHEET`
+    # Stage `s5a`: 2-Ply Minimax (`erode` MIN + `dilate` MAX) -> `QSTRIP`, `WINMASK`
     # =========================================================================
     vh = ly["value_head"]
     nz0_vh = _fmt_num(-float(vh["zero_point"]))
-    sig_tbl = _fmt_list(vh["sigmoid_table_values"])
+    sig_tbl = " ".join(_ct_u8(int(round(float(v) * 255.0))) for v in vh["sigmoid_table_values"])
     nm1_x, nm1_y = sc(VRAM_NOM2_C1[0]), sc(VRAM_NOM2_C1[1])
     vsh_x, vsh_y = sc(VRAM_VSHEET[0]), sc(VRAM_VSHEET[1])
     qs_x, qs_y = sc(VRAM_QSTRIP[0]), sc(VRAM_QSTRIP[1])
@@ -2220,30 +2788,41 @@ def compile_chess_ai_filters(spec: dict, dpr: int) -> List[str]:
     tie_x, tie_y = LUT_TIE_POS
     h2 = sc(2)
 
-    feat_slots = list(VRAM_DW3_C1) + [VRAM_SKIP_C1]
-    p5a: List[str] = []
+    feat_slots = list(VRAM_DW3_C1[:g3_cnt]) + [VRAM_SKIP_C1]
+    p5v: List[str] = []
     vh_acc = ""
     for g, slot in enumerate(feat_slots):
         fx, fy = sc(slot[0]), sc(slot[1])
         mat20 = vh["color_matrices"][g]
-        p5a.append(f'<feOffset in="SourceGraphic" dx="{-fx}" dy="{-fy}" x="0" y="0" width="{c1_w}" height="{c1_h}" result="f_{g}"/>')
-        p5a.append(f'<feColorMatrix in="f_{g}" x="0" y="0" width="{c1_w}" height="{c1_h}" type="matrix" values="{_fmt_list(mat20)}" result="vp_{g}"/>')
+        p5v.append(f'<feOffset in="SourceGraphic" dx="{-fx}" dy="{-fy}" x="0" y="0" width="{c1_w}" height="{c1_h}" result="f_{g}"/>')
+        p5v.append(f'<feColorMatrix in="f_{g}" x="0" y="0" width="{c1_w}" height="{c1_h}" type="matrix" values="{_fmt_list(mat20)}" result="vp_{g}"/>')
         if g == 0:
             vh_acc = "vp_0"
         else:
             nxt = f"va_{g}"
-            p5a.append(f'<feComposite in="{vh_acc}" in2="vp_{g}" x="0" y="0" width="{c1_w}" height="{c1_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="{nz0_vh}" result="{nxt}"/>')
+            p5v.append(f'<feComposite in="{vh_acc}" in2="vp_{g}" x="0" y="0" width="{c1_w}" height="{c1_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="{nz0_vh}" result="{nxt}"/>')
             vh_acc = nxt
 
-    p5a.extend([
+    p5v.extend([
         f'<feComponentTransfer in="{vh_acc}" x="0" y="0" width="{c1_w}" height="{c1_h}" result="v_sig">'
         f'<feFuncR type="table" tableValues="{sig_tbl}"/><feFuncG type="table" tableValues="{sig_tbl}"/><feFuncB type="table" tableValues="{sig_tbl}"/>'
         f'<feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
-        # Force `no_m2` quadrants to `255/255 = 1.0`:
+        # Override Opponent-Checkmate leaves (`nm1.B == 1`) to `2/255`, then force `no_m2` (`nm1.R == 1`) to `255/255`:
         f'<feOffset in="SourceGraphic" dx="{-nm1_x}" dy="{-nm1_y}" x="0" y="0" width="{c1_w}" height="{c1_h}" result="nm1"/>',
+        f'<feColorMatrix in="nm1" x="0" y="0" width="{c1_w}" height="{c1_h}" type="matrix" values="0 0 -1 0 1 0 0 -1 0 1 0 0 -1 0 1 0 0 0 0 1" result="not_mt"/>',
+        f'<feComposite in="v_sig" in2="not_mt" x="0" y="0" width="{c1_w}" height="{c1_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="v_m1"/>',
+        f'<feColorMatrix in="nm1" x="0" y="0" width="{c1_w}" height="{c1_h}" type="matrix" values="0 0 {_fmt_num(2/255)} 0 0 0 0 {_fmt_num(2/255)} 0 0 0 0 {_fmt_num(2/255)} 0 0 0 0 0 0 1" result="mt_flr"/>',
+        f'<feComposite in="v_m1" in2="mt_flr" x="0" y="0" width="{c1_w}" height="{c1_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="v_m2"/>',
         f'<feColorMatrix in="nm1" x="0" y="0" width="{c1_w}" height="{c1_h}" type="matrix" values="1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 0 0 0 0 1" result="nm_rgb"/>',
-        f'<feComposite in="v_sig" in2="nm_rgb" x="0" y="0" width="{c1_w}" height="{c1_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="v_sh0"/>',
+        f'<feComposite in="v_m2" in2="nm_rgb" x="0" y="0" width="{c1_w}" height="{c1_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="v_sh0"/>',
         f'<feOffset in="v_sh0" dx="{vsh_x}" dy="{vsh_y}" x="{vsh_x}" y="{vsh_y}" width="{c1_w}" height="{c1_h}" result="v_sheet"/>',
+    ])
+    _emit_passthrough(p5v, ["v_sheet"])
+    out_filters.append(_wrap_filter(f"ai-s5v-{dpr}x", p5v))
+
+    p5a: List[str] = [
+        f'<feOffset in="SourceGraphic" dx="{-vsh_x}" dy="{-vsh_y}" x="0" y="0" width="{c1_w}" height="{c1_h}" result="v_sh0"/>',
+        f'<feOffset in="SourceGraphic" dx="{-nm1_x}" dy="{-nm1_y}" x="0" y="0" width="{c1_w}" height="{h2}" result="nm1"/>',
         # Periodic 3x vertical tile (`height = 3 * c1_h`) -> exact 16-row `erode` with ZERO boundary bleed!
         f'<feTile in="v_sh0" x="0" y="0" width="{c1_w}" height="{3 * c1_h}" result="v_t3"/>',
         f'<feMorphology in="v_t3" x="0" y="0" width="{c1_w}" height="{3 * c1_h}" operator="erode" radius="0 {_fmt_num(8 * u)}" result="v_er"/>',
@@ -2280,8 +2859,8 @@ def compile_chess_ai_filters(spec: dict, dpr: int) -> List[str]:
         f'<feComponentTransfer in="dtie" x="0" y="0" width="{c1_w}" height="{h2}" result="eq_tm"><feFuncR type="table" tableValues="{tbl_eq0}"/><feFuncG type="table" tableValues="{tbl_eq0}"/><feFuncB type="table" tableValues="{tbl_eq0}"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
         f'<feComposite in="eq_tm" in2="is_tied" x="0" y="0" width="{c1_w}" height="{h2}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="wm_0"/>',
         f'<feOffset in="wm_0" dx="{wm_x}" dy="{wm_y}" x="{wm_x}" y="{wm_y}" width="{c1_w}" height="{h2}" result="win_mask"/>',
-    ])
-    _emit_passthrough(p5a, ["v_sheet", "q_strip", "win_mask"])
+    ]
+    _emit_passthrough(p5a, ["q_strip", "win_mask"])
     out_filters.append(_wrap_filter(f"ai-s5a-{dpr}x", p5a))
 
     # =========================================================================
@@ -2359,6 +2938,8 @@ def compile_chess_ai_filters(spec: dict, dpr: int) -> List[str]:
             r, g, b = 0.035, 0.055, 0.110
         elif c == 254:
             r, g, b = 0.980, 0.800, 0.080
+        elif c == 2:
+            r, g, b = 0.960, 0.100, 0.240
         elif c == 0:
             r, g, b = 0.030, 0.045, 0.085
         else:
@@ -2429,7 +3010,8 @@ def compile_chess_ai_filters(spec: dict, dpr: int) -> List[str]:
     #               (Strips all remaining VRAM & LUTs -> crisp final dashboard!)
     # =========================================================================
     sk1_x, sk1_y = sc(VRAM_SKIP_C1[0]), sc(VRAM_SKIP_C1[1])
-    d37_x, d37_y = sc(VRAM_DW3_C1[7][0]), sc(VRAM_DW3_C1[7][1])
+    best_d3 = best_dwconv3_triplet(spec)
+    d37_x, d37_y = sc(VRAM_DW3_C1[best_d3][0]), sc(VRAM_DW3_C1[best_d3][1])
 
     tbl_q_to_prob = " ".join(
         "0" if c == 0 else ("1" if c >= 253 else _fmt_num(max(0.0, (c - 3.0) / 250.0))) for c in range(256)

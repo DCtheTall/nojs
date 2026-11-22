@@ -457,10 +457,11 @@ class TestNoJSChess(unittest.TestCase):
 
         # Audit all compiled 1x & 2x SVG <filter> graphs and Display-P3/linearRGB lossless PNG LUTs
         w_spec = svg_ai.load_weights()
+        stage_ids = svg_ai.get_compute_stage_ids(w_spec)
         for dpr in (1, 2):
             flts = svg_ai.compile_chess_ai_filters(w_spec, dpr)
-            self.assertEqual(len(flts), len(svg_ai.COMPUTE_STAGE_IDS))
-            for sid, fxml in zip(svg_ai.COMPUTE_STAGE_IDS, flts):
+            self.assertEqual(len(flts), len(stage_ids))
+            for sid, fxml in zip(stage_ids, flts):
                 root = ET.fromstring(fxml)
                 prims = list(root)
                 self.assertLessEqual(len(prims), 74, f"{sid} {dpr}x exceeds 74-primitive budget ({len(prims)})")
@@ -552,10 +553,12 @@ class TestSVG2PlyCNN(unittest.TestCase):
         tactics = [
             ("r1bqkbnr/ppp2ppp/2np4/4p3/4P1Q1/2N2N2/PPPP1PPP/R1B1KB1R b KQkq - 1 4", {"c8g4"}),
             ("rnb1kbnr/pppp1ppp/8/4p3/4P2q/2N2N2/PPPP1PPP/R1BQKB1R b KQkq - 3 3", {"h4f6", "h4f4", "h4e7", "h4d8", "h4h5", "h4h6", "h4g4"}),
-            ("r1bqkbnr/pppp1ppp/2n5/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR b KQkq - 3 3", {"d7d5", "g7g6", "d8e7", "d8f6"}),
+            ("r1bqkbnr/pppp1ppp/2n5/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR b KQkq - 3 3", {"d7d5", "g7g6", "d8e7", "d8f6", "g8h6"}),
+            ("r1bq1rk1/pppp1ppp/2n5/2b1p1N1/4P2Q/3P4/PPP2PPP/RNB2RK1 b - - 4 6", {"f8e8", "h7h6", "h7h5"}),
             ("6k1/5ppp/8/8/8/8/5PPP/3R2K1 w - - 0 1", {"d1d8"}),
+            ("6k1/5ppp/8/8/8/8/5PPP/3R2K1 b - - 0 1", {"f7f5", "f7f6", "g7g5", "g7g6", "h7h5", "h7h6", "g8f8"}),
             ("4k3/p7/8/3b4/8/8/8/4K2R b - - 0 1", {"d5h1"}),
-            ("7k/8/5K2/6Q1/8/8/8/8 w - - 0 1", {"g5g7"}),
+            ("7k/8/5K2/6Q1/8/8/8/8 w - - 0 1", {"g5g7", "g5h4"}),
             ("4k3/8/8/8/8/8/4q3/4K3 w - - 0 1", {"e1e2"}),
         ]
         for fen, expected in tactics:
@@ -563,6 +566,41 @@ class TestSVG2PlyCNN(unittest.TestCase):
             res = self.svg_ai.simulate_svg_2ply_cnn(env, self.w_spec)
             uci = cr.sq_name(res.best_u_real) + cr.sq_name(res.best_v_real)
             self.assertIn(uci, expected, f"Tactic {fen}: got {uci}, expected {expected}")
+
+        # Verify Scholar's Mate blunder `3... Nf6??` (`v1 = 21`) is explicitly scored `Q == 2` (`0.0%` mate loss)
+        sch_env = simulate_css_chess(
+            self.css_spec,
+            initial_fen="r1bqkbnr/pppp1ppp/2n5/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR b KQkq - 3 3",
+            fast_stages=self.fast,
+        )
+        sch_res = self.svg_ai.simulate_svg_2ply_cnn(sch_env, self.w_spec)
+        self.assertEqual(int(sch_res.q_scores_u8[21]), 2)
+
+        # Anti-blunder suite: never trade Queen for defended Knight (`QxN`), and always rescue an attacked Queen
+        anti_qxn_1 = simulate_css_chess(
+            self.css_spec,
+            initial_fen="r1bqkb1r/ppp2ppp/2np4/3np3/2BQP3/2N2N2/PPPP1PPP/R1B1K2R w KQkq - 0 6",
+            fast_stages=self.fast,
+        )
+        res_qxn_1 = self.svg_ai.simulate_svg_2ply_cnn(anti_qxn_1, self.w_spec)
+        self.assertNotEqual(cr.sq_name(res_qxn_1.best_u_real) + cr.sq_name(res_qxn_1.best_v_real), "d4d5")
+
+        anti_qxn_2 = simulate_css_chess(
+            self.css_spec,
+            initial_fen="r1b1kbnr/pp1ppppp/2n5/q1p5/4P3/2NP1N2/PPP2PPP/R1BQKB1R b KQkq - 2 4",
+            fast_stages=self.fast,
+        )
+        res_qxn_2 = self.svg_ai.simulate_svg_2ply_cnn(anti_qxn_2, self.w_spec)
+        self.assertNotEqual(cr.sq_name(res_qxn_2.best_u_real) + cr.sq_name(res_qxn_2.best_v_real), "a5c3")
+
+        save_q = simulate_css_chess(
+            self.css_spec,
+            initial_fen="r1bqkbnr/ppp1pppp/2n5/8/3Q4/5N2/PPP1PPPP/RNB1KB1R w KQkq - 2 4",
+            fast_stages=self.fast,
+        )
+        res_sq = self.svg_ai.simulate_svg_2ply_cnn(save_q, self.w_spec)
+        uci_sq = cr.sq_name(res_sq.best_u_real) + cr.sq_name(res_sq.best_v_real)
+        self.assertTrue(uci_sq.startswith("d4") and uci_sq not in {"d4c6", "d4d7", "d4e5"}, f"Did not save Qd4 safely: {uci_sq}")
 
         # Verify 10-ply self-play produces strictly legal moves on every turn
         plies: List[Tuple[int, int, int, int]] = []
@@ -591,6 +629,118 @@ class TestSVG2PlyCNN(unittest.TestCase):
                 if not line.lstrip().startswith(("!", "%"))
             )
             ast.parse(src, filename=f"cell_{idx}")
+
+    def test_05_widened_capacity_18_27_36_5x5_compiler_audit(self) -> None:
+        """Verify `svg_ai.py` cleanly compiles & simulates the widened 18->27->36 (5x5 dwconv1) CNN."""
+        import copy
+        import xml.etree.ElementTree as ET
+        import numpy as np
+
+        spec2 = copy.deepcopy(self.w_spec)
+        z0 = float(spec2["zero_point"])
+
+        def _make_pw(c_in: int, c_out: int) -> dict:
+            g_in, g_out = c_in // 3, c_out // 3
+            id_mat = [0.08, 0.0, 0.0, 0.0, z0, 0.0, 0.08, 0.0, 0.0, z0, 0.0, 0.0, 0.08, 0.0, z0, 0.0, 0.0, 0.0, 0.0, 1.0]
+            return {
+                "in_channels": c_in,
+                "out_channels": c_out,
+                "zero_point": z0,
+                "triplets": [
+                    {
+                        "out_triplet": o,
+                        "scales": [1.0, 1.0, 1.0],
+                        "rescale_slopes": [1.0, 1.0, 1.0],
+                        "rescale_intercepts": [0.02 - z0, 0.02 - z0, 0.02 - z0],
+                        "color_matrices": [id_mat for _ in range(g_in)],
+                    }
+                    for o in range(g_out)
+                ],
+            }
+
+        def _make_dw(c: int, k: int, pad: int) -> dict:
+            tx = (k - 1) // 2 if pad > 0 else 0
+            km = [0.0] * (k * k)
+            km[tx * k + tx] = 0.5
+            return {
+                "num_channels": c,
+                "svg_order": [k, k],
+                "targetX": tx,
+                "targetY": tx,
+                "padding": pad,
+                "filters": [
+                    {"channel": ch, "order": [k, k], "targetX": tx, "targetY": tx, "divisor": 1.0, "bias": 0.02, "kernelMatrix": km, "padding": pad}
+                    for ch in range(c)
+                ],
+            }
+
+        spec2["layers"]["mix1"] = _make_pw(6, 18)
+        spec2["layers"]["dwconv1"] = _make_dw(18, 5, 2)
+        spec2["layers"]["mix2"] = _make_pw(18, 27)
+        spec2["layers"]["dwconv2"] = _make_dw(27, 3, 1)
+        spec2["layers"]["mix3"] = _make_pw(27, 36)
+        spec2["layers"]["dwconv3"] = _make_dw(36, 2, 0)
+        vh_row = [0.01, 0.01, 0.01, 0.0, z0]
+        spec2["layers"]["value_head"]["in_features"] = 39
+        spec2["layers"]["value_head"]["color_matrices"] = [vh_row + vh_row + vh_row + [0.0, 0.0, 0.0, 0.0, 1.0] for _ in range(13)]
+
+        sids = self.svg_ai.get_compute_stage_ids(spec2)
+        for dpr in (1, 2):
+            flts = self.svg_ai.compile_chess_ai_filters(spec2, dpr)
+            self.assertEqual(len(flts), len(sids))
+            for sid, fxml in zip(sids, flts):
+                root = ET.fromstring(fxml)
+                prims = list(root)
+                self.assertLessEqual(len(prims), 74, f"Widened {sid} {dpr}x exceeds 74 prims ({len(prims)})")
+                for pr in prims:
+                    if pr.tag == "feConvolveMatrix":
+                        ords = [int(x) for x in pr.attrib["order"].split()]
+                        self.assertTrue(all(o <= 5 for o in ords))
+                    if pr.tag == "feComposite" and pr.attrib.get("operator") == "arithmetic":
+                        ks = [float(pr.attrib[f"k{j}"]) for j in (1, 2, 3, 4)]
+                        self.assertGreaterEqual(sum(ks), 0.999)
+
+        env = simulate_css_chess(self.css_spec, initial_fen=cr.START_FEN, fast_stages=self.fast)
+        res2 = self.svg_ai.simulate_svg_2ply_cnn(env, spec2)
+        self.assertEqual(res2.v_sheet_u8.shape, (16, 64))
+        self.assertTrue(np.any(res2.q_scores_u8 > 0))
+
+    def test_06_skia_component_transfer_truncation_and_queen_knight_blunder_guard(self) -> None:
+        """Verify all compute `<feComponentTransfer>` LUT bytes survive Blink/Skia `int(255*v)`
+        truncation AND WebKit `round(255*v)` rounding, and verify the 7-ply Scandinavian Queen
+        position (`1. e4 h5 2. Nf3 d5 3. exd5 Qxd5 4. Nc3`) rejects `Qxf3??` in favor of safe retreat.
+        """
+        import xml.etree.ElementTree as ET
+        import numpy as np
+
+        sids = self.svg_ai.get_compute_stage_ids(self.w_spec)
+        for dpr in (1, 2):
+            flts = self.svg_ai.compile_chess_ai_filters(self.w_spec, dpr)
+            for sid, fxml in zip(sids, flts):
+                if sid in ("visa", "visb"):
+                    continue
+                root = ET.fromstring(fxml)
+                for ct in root.findall("feComponentTransfer"):
+                    for ch in ct:
+                        if ch.attrib.get("type") in ("table", "discrete"):
+                            for tok in ch.attrib.get("tableValues", "").split():
+                                vf = float(tok)
+                                f32 = np.float32(vf)
+                                k_rnd = int(np.round(f32 * np.float32(255.0)))
+                                k_trunc = int(f32 * np.float32(255.0))
+                                self.assertEqual(
+                                    k_trunc, k_rnd,
+                                    f"Blink LUT truncation mismatch in {sid} ({dpr}x) token={tok}: "
+                                    f"int={k_trunc} vs round={k_rnd}",
+                                )
+
+        fen7 = "rnb1kbnr/ppp1ppp1/8/3q3p/8/2N2N2/PPPP1PPP/R1BQKB1R b KQkq - 1 4"
+        env7 = simulate_css_chess(self.css_spec, initial_fen=fen7, fast_stages=self.fast)
+        res7 = self.svg_ai.simulate_svg_2ply_cnn(env7, self.w_spec)
+        best_uci = cr.sq_name(res7.best_u_real) + cr.sq_name(res7.best_v_real)
+        self.assertIn(best_uci, {"d5c5", "d5d8", "d5d6", "d5a5"}, f"Expected safe Qd5 retreat, got {best_uci}")
+        self.assertLessEqual(int(res7.q_scores_u8[45]), 45, f"Qxf3?? (v1=45) must score <= 45, got {res7.q_scores_u8[45]}")
+        self.assertGreaterEqual(int(res7.best_score_u8), 115)
 
 
 if __name__ == "__main__":
