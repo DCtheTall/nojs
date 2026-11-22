@@ -45,6 +45,7 @@ jobs:
           cp cnn/index.html _site/cnn/index.html
           cp -R cnn/assets _site/cnn/assets
           cp chess/index.html _site/chess/index.html
+          cp -R chess/assets _site/chess/assets
           python - <<'PY'
           from html.parser import HTMLParser
           import pathlib

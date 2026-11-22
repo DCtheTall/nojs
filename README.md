@@ -32,6 +32,7 @@ All projects include Python code which generate the relevant HTML and CSS.
 
 ### [Chess](https://dcthetall.github.io/nojs/chess/) [`chess/`](chess/)
 
-- Full 2-player FIDE chess rules with strict legal-move enforcement
-- Evaluates pins, checks, castling, en passant, promotions, checkmate, and stalemate
-- Supports undo, board flip, and preset tactical positions
+- 1-player mode against an HTML5 SVG `<filter>` 2-ply Minimax AI + 2-player local Pass & Play
+- Stockfish-distilled 3-layer 8-bit quantized CNN Value Network (`r = 0.903` correlation) evaluating 1,024 depth-2 boards in parallel
+- Full FIDE chess rules in CSS: pins, checks, castling, en passant, promotions, checkmate, stalemate, and 50-move rule
+- Supports undo, board flip, live neural value/latent heatmaps, and preset tactical positions

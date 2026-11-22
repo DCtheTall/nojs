@@ -469,10 +469,16 @@ def build_chess_css_spec() -> ChessCSSSpec:
 
         e2_roles.append((f"--own_p{u}", wrap_calc(f"var(--own{u})*{is_p}")))
         e2_roles.append((f"--own_n{u}", wrap_calc(f"var(--own{u})*{is_n}")))
+        e2_roles.append((f"--own_b{u}", wrap_calc(f"var(--own{u})*{is_b}")))
+        e2_roles.append((f"--own_r{u}", wrap_calc(f"var(--own{u})*{is_r}")))
+        e2_roles.append((f"--own_q{u}", wrap_calc(f"var(--own{u})*{is_q}")))
         e2_roles.append((f"--own_dg{u}", wrap_calc(f"var(--own{u})*({is_b} + {is_q})")))
         e2_roles.append((f"--own_or{u}", wrap_calc(f"var(--own{u})*({is_r} + {is_q})")))
         e2_roles.append((f"--opp_p{u}", wrap_calc(f"var(--opp{u})*{is_p}")))
         e2_roles.append((f"--opp_n{u}", wrap_calc(f"var(--opp{u})*{is_n}")))
+        e2_roles.append((f"--opp_b{u}", wrap_calc(f"var(--opp{u})*{is_b}")))
+        e2_roles.append((f"--opp_r{u}", wrap_calc(f"var(--opp{u})*{is_r}")))
+        e2_roles.append((f"--opp_q{u}", wrap_calc(f"var(--opp{u})*{is_q}")))
         e2_roles.append((f"--opp_k{u}", wrap_calc(f"var(--opp{u})*{is_k}")))
     stage_defs["e0a"] = e0a
     stage_defs["e0b"] = e0b
@@ -851,6 +857,23 @@ def build_chess_css_spec() -> ChessCSSSpec:
         ext_emp_prefix="rv",
         ext_emp_scale=2,
     )
+
+    def _msl_prop_expr(sq: int, d_scan: int) -> str:
+        ax = RAY_DIRS[d_scan][2]
+        if d_scan < 4:
+            return f"((64 + {sq})*var(--own_r{sq}) + (128 + {sq})*var(--own_q{sq}))*var(--pax{sq}_{ax})"
+        return f"((64 + {sq})*var(--own_b{sq}) + (128 + {sq})*var(--own_q{sq}))*var(--pax{sq}_{ax})"
+
+    add_radix3_ray_scan(
+        e7, e8,
+        prefix="msl",
+        prop_expr_fn=_msl_prop_expr,
+        occ_var_fn=lambda sq: f"var(--occ{sq})",
+        allow_empty_prop=False,
+        pack_emp=False,
+        ext_emp_prefix="rv",
+        ext_emp_scale=2,
+    )
     stage_defs["e7"] = e7
     stage_defs["e8"] = e8
 
@@ -1064,9 +1087,117 @@ def build_chess_css_spec() -> ChessCSSSpec:
     e10.append(("--draw_insuf", wrap_calc(insuf_s)))
     e10.append(("--draw_50", wrap_calc(d50_s)))
     e10.append(("--is_terminal", wrap_calc(term_s)))
+
+    def _chain_first(pairs: Sequence[Tuple[str, str]]) -> str:
+        if not pairs:
+            return "0"
+        g_cur, val_cur = pairs[0]
+        if len(pairs) == 1:
+            return f"{g_cur}*{val_cur}"
+        rest = _chain_first(pairs[1:])
+        return f"({g_cur}*{val_cur} + (1 - {g_cur})*{rest})"
+
+    for v in range(64):
+        vr, vf = divmod(v, 8)
+        # 1. Pawn candidates (`64 + u` normal/promo, `128 + u` en passant)
+        p_pairs: List[Tuple[str, str]] = []
+        if vr >= 2:
+            u1 = v - 8
+            p_pairs.append((f"((1 - var(--turn))*var(--own_p{u1})*(1 - var(--occ{v}))*var(--evd{v})*var(--pax{u1}_2))", str(64 + u1)))
+            if vr == 3:
+                u2 = v - 16
+                p_pairs.append((f"((1 - var(--turn))*var(--own_p{u2})*(1 - var(--occ{v - 8}))*(1 - var(--occ{v}))*var(--evd{v})*var(--pax{u2}_2))", str(64 + u2)))
+            if vf > 0:
+                ul = v - 9
+                p_pairs.append((f"((1 - var(--turn))*var(--own_p{ul})*var(--opp{v})*var(--evd{v})*var(--pax{ul}_3))", str(64 + ul)))
+            if vf < 7:
+                ur_s = v - 7
+                p_pairs.append((f"((1 - var(--turn))*var(--own_p{ur_s})*var(--opp{v})*var(--evd{v})*var(--pax{ur_s}_4))", str(64 + ur_s)))
+            if vr == 5:
+                if vf > 0:
+                    p_pairs.append((f"var(--epw_{vf - 1}_{vf})", str(128 + 32 + vf - 1)))
+                if vf < 7:
+                    p_pairs.append((f"var(--epw_{vf + 1}_{vf})", str(128 + 32 + vf + 1)))
+        if vr <= 5:
+            u1 = v + 8
+            p_pairs.append((f"(var(--turn)*var(--own_p{u1})*(1 - var(--occ{v}))*var(--evd{v})*var(--pax{u1}_2))", str(64 + u1)))
+            if vr == 4:
+                u2 = v + 16
+                p_pairs.append((f"(var(--turn)*var(--own_p{u2})*(1 - var(--occ{v + 8}))*(1 - var(--occ{v}))*var(--evd{v})*var(--pax{u2}_2))", str(64 + u2)))
+            if vf < 7:
+                ul = v + 9
+                p_pairs.append((f"(var(--turn)*var(--own_p{ul})*var(--opp{v})*var(--evd{v})*var(--pax{ul}_3))", str(64 + ul)))
+            if vf > 0:
+                ur_s = v + 7
+                p_pairs.append((f"(var(--turn)*var(--own_p{ur_s})*var(--opp{v})*var(--evd{v})*var(--pax{ur_s}_4))", str(64 + ur_s)))
+            if vr == 2:
+                if vf > 0:
+                    p_pairs.append((f"var(--epb_{vf - 1}_{vf})", str(128 + 24 + vf - 1)))
+                if vf < 7:
+                    p_pairs.append((f"var(--epb_{vf + 1}_{vf})", str(128 + 24 + vf + 1)))
+        e10.append((f"--mc_p_{v}", wrap_calc(_chain_first(p_pairs))))
+
+        # 2. Knight candidates (`64 + u`)
+        n_pairs = [
+            (f"(var(--own_n{u})*(1 - min(1,var(--pdir{u}))))", str(64 + u))
+            for dr, df in KNIGHT_DELTAS
+            if (u := _delta_sq(v, dr, df)) is not None
+        ]
+        e10.append((f"--mc_n_{v}", wrap_calc(f"var(--vtgt{v})*{_chain_first(n_pairs)}" if n_pairs else "0")))
+
+        # 3. Bishop candidates (`64 + u` from diagonal rays)
+        b_pairs = [
+            (
+                f"(clamp(0,var(--msl7_{d ^ 1}_{v}) - 63,1)*(1 - clamp(0,var(--msl7_{d ^ 1}_{v}) - 127,1)))",
+                f"var(--msl7_{d ^ 1}_{v})",
+            )
+            for d in range(4, 8)
+            if _step_sq(v, d ^ 1, 1) is not None
+        ]
+        e10.append((f"--mc_b_{v}", wrap_calc(f"var(--vtgt{v})*{_chain_first(b_pairs)}" if b_pairs else "0")))
+
+        # 4. Rook candidates (`64 + u` from orthogonal rays)
+        r_pairs = [
+            (
+                f"(clamp(0,var(--msl7_{d ^ 1}_{v}) - 63,1)*(1 - clamp(0,var(--msl7_{d ^ 1}_{v}) - 127,1)))",
+                f"var(--msl7_{d ^ 1}_{v})",
+            )
+            for d in range(0, 4)
+            if _step_sq(v, d ^ 1, 1) is not None
+        ]
+        e10.append((f"--mc_r_{v}", wrap_calc(f"var(--vtgt{v})*{_chain_first(r_pairs)}" if r_pairs else "0")))
+
+        # 5. Queen candidates (`64 + u` from all 8 rays where msl7 >= 128)
+        q_pairs = [
+            (
+                f"clamp(0,var(--msl7_{d ^ 1}_{v}) - 127,1)",
+                f"(var(--msl7_{d ^ 1}_{v}) - 64)",
+            )
+            for d in range(0, 8)
+            if _step_sq(v, d ^ 1, 1) is not None
+        ]
+        e10.append((f"--mc_q_{v}", wrap_calc(f"var(--vtgt{v})*{_chain_first(q_pairs)}" if q_pairs else "0")))
+
+        # 6. King candidates (`64 + u` normal, `128 + u` O-O, `192 + u` O-O-O; mutually exclusive!)
+        k_terms = [
+            f"var(--own_k{u})*(1 - var(--own{v}))*(1 - var(--katt{v}))*{64 + u}"
+            for dr, df in KING_DELTAS
+            if (u := _delta_sq(v, dr, df)) is not None
+        ]
+        if v == 6:
+            k_terms.append(f"var(--cleg_wk)*{128 + 4}")
+        elif v == 2:
+            k_terms.append(f"var(--cleg_wq)*{192 + 4}")
+        elif v == 62:
+            k_terms.append(f"var(--cleg_bk)*{128 + 60}")
+        elif v == 58:
+            k_terms.append(f"var(--cleg_bq)*{192 + 60}")
+        e10.append((f"--mc_k_{v}", wrap_calc(css_sum_terms(k_terms))))
+
+        # 7. Precompute NBRQ chain (`--mc_nbrq_u_{v}`, `--mc_nbrq_c_{v}`) in e10? No — cannot read `--mc_n_{v}` in e10!
     stage_defs["e10"] = e10
 
-    # .e11: Status readout & UI board square gates reading materialized `--is_terminal`!
+    # .e11: Status readout, UI board square gates, & Ply-1 per-square `(ru, rc)` selection!
     e11: List[Tuple[str, str]] = []
     live_v = "(1 - var(--is_terminal))"
     status_s = (
@@ -1089,10 +1220,69 @@ def build_chess_css_spec() -> ChessCSSSpec:
         is_ep_cap_ui = f"var(--sel_p)*(1 - var(--occ{u}))*{css_eq(f'var(--ep_sq)', u)}"
         e11.append((f"--cap_{u}", wrap_calc(f"{live_v}*var(--rleg_{u})*min(1,var(--occ{u}) + {is_ep_cap_ui})")))
 
+        vr = u // 8
+        gp = f"clamp(0,var(--mc_p_{u}),1)"
+        gn = f"clamp(0,var(--mc_n_{u}),1)"
+        gb = f"clamp(0,var(--mc_b_{u}),1)"
+        gr = f"clamp(0,var(--mc_r_{u}),1)"
+        gq = f"clamp(0,var(--mc_q_{u}),1)"
+        gk = f"clamp(0,var(--mc_k_{u}),1)"
+        is_ep = f"clamp(0,var(--mc_p_{u}) - 127,1)"
+        up_e = f"(var(--mc_p_{u}) - 64 - 64*{is_ep})"
+        cp_e = "5" if vr in (0, 7) else f"(1 + 8*{is_ep})"
+        is_oo = f"(clamp(0,var(--mc_k_{u}) - 127,1)*(1 - clamp(0,var(--mc_k_{u}) - 191,1)))"
+        is_ooo = f"clamp(0,var(--mc_k_{u}) - 191,1)"
+        uk_e = f"(var(--mc_k_{u}) - 64 - 64*{is_oo} - 128*{is_ooo})"
+        ck_e = f"(6 + {is_oo} + 2*{is_ooo})"
+
+        is_cap_m = f"min(1,var(--occ{u}) + {is_ep})"
+        gp_pre = f"({is_cap_m}*{gp})"
+        gp_post = f"((1 - {is_cap_m})*{gp})"
+
+        u_prio = _chain_first([
+            (gp_pre, up_e),
+            (gn, f"(var(--mc_n_{u}) - 64)"),
+            (gb, f"(var(--mc_b_{u}) - 64)"),
+            (gr, f"(var(--mc_r_{u}) - 64)"),
+            (gq, f"(var(--mc_q_{u}) - 64)"),
+            (gp_post, up_e),
+            (gk, uk_e),
+        ])
+        c_prio = _chain_first([
+            (gp_pre, cp_e),
+            (gn, "2"),
+            (gb, "3"),
+            (gr, "4"),
+            (gq, "5"),
+            (gp_post, cp_e),
+            (gk, ck_e),
+        ])
+        e11.append((f"--m1_ru_{u}", wrap_calc(u_prio)))
+        e11.append((f"--m1_rc_{u}", wrap_calc(c_prio)))
+
     stage_defs["e11"] = e11
 
+    # .e12: Orientation-normalized Ply-1 Legal Move Strip (`--m1_u_0..63`, `--m1_v_0..63`, `--m1_c_0..63`)
+    #       for the SVG 2-Ply CNN Minimax Engine (`ar = r` when White to move, `7 - r` when Black to move)
+    e12: List[Tuple[str, str]] = []
+    for a in range(64):
+        ar, af = divmod(a, 8)
+        sq_w = 8 * ar + af
+        sq_b = 8 * (7 - ar) + af
+        c_raw = f"((1 - var(--turn))*var(--m1_rc_{sq_w}) + var(--turn)*var(--m1_rc_{sq_b}))"
+        c_live = f"({live_v}*{c_raw})"
+        has_m = f"clamp(0,{c_live},1)"
+        uw = f"var(--m1_ru_{sq_w})"
+        ub = f"var(--m1_ru_{sq_b})"
+        ub_flip = f"(56 - {ub} + 2*mod({ub},8))"
+        u_norm = f"((1 - var(--turn))*{uw} + var(--turn)*{ub_flip})"
+        e12.append((f"--m1_c_{a}", wrap_calc(c_live)))
+        e12.append((f"--m1_u_{a}", wrap_calc(f"{has_m}*{u_norm} + (1 - {has_m})*64")))
+        e12.append((f"--m1_v_{a}", wrap_calc(f"{has_m}*{a} + (1 - {has_m})*64")))
+    stage_defs["e12"] = e12
+
     ply_classes = ("m0", "m1")
-    eval_classes = ("e0a", "e0b", "e1", "e2", "e3", "e4", "e5", "e6", "e7", "e8", "e9", "e10", "e11")
+    eval_classes = ("e0a", "e0b", "e1", "e2", "e3", "e4", "e5", "e6", "e7", "e8", "e9", "e10", "e11", "e12")
 
     keep_names: Set[str] = {
         "--in_f", "--in_t", "--in_c", "--in_pr",
@@ -1108,11 +1298,16 @@ def build_chess_css_spec() -> ChessCSSSpec:
             f"--b{u}",
             f"--occ{u}",
             f"--isel{u}",
+            f"--own_p{u}", f"--own_n{u}", f"--own_b{u}", f"--own_r{u}", f"--own_q{u}", f"--own_k{u}",
+            f"--opp_p{u}", f"--opp_n{u}", f"--opp_b{u}", f"--opp_r{u}", f"--opp_q{u}", f"--opp_k{u}",
             f"--has_leg_{u}",
             f"--can_sel_{u}",
             f"--leg_{u}",
             f"--chk_k_{u}",
             f"--cap_{u}",
+            f"--m1_u_{u}",
+            f"--m1_v_{u}",
+            f"--m1_c_{u}",
         ))
 
     compiled_defs, num_temps = _allocate_temp_registers(

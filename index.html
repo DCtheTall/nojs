@@ -171,18 +171,18 @@ footer.foot a:hover{color:#38bdf8;border-bottom-color:#38bdf8}
       <div class="card-top">
         <div class="card-meta">
           <span class="card-path">chess/</span>
-          <span class="card-size">~2.3 MB · 0 JS · 0 SVG</span>
+          <span class="card-size">~3.7 MB + PNG LUTs · 0 JS</span>
         </div>
-        <h2>2-Player FIDE Chess</h2>
-        <p>Full 2-player chess referee and board engine executing ray-cast pins, checks, castling, en passant, promotions, checkmate, and stalemate in CSS.</p>
+        <h2>FIDE Chess &amp; SVG 2-Ply CNN AI</h2>
+        <p>Full 1P/2P FIDE chess referee in CSS paired with an HTML5 SVG <code>&lt;filter&gt;</code> 2-ply Minimax AI guided by a Stockfish-distilled CNN.</p>
         <ul class="spec-list">
-          <li>Radix-3 Kogge-Stone 8-ray pin, X-ray King &amp; double-check filter</li>
-          <li>Castling transit checks, horizontal EP pins &amp; underpromotions</li>
-          <li>Checkmate, stalemate, insufficient material &amp; 50-move rule</li>
-          <li>100-ply move history with LIFO undo, board flip &amp; tactical presets</li>
+          <li>1P vs SVG AI (White/Black) + 2P Pass &amp; Play with LIFO undo</li>
+          <li>1,345-param 8-bit CNN Value Net (<code>r = 0.903</code> vs Stockfish)</li>
+          <li>Parallel GPU search over 1,024 depth-2 FIDE-legal boards</li>
+          <li>Exact pins, X-ray King checks, castling, EP, mate &amp; stalemate</li>
         </ul>
       </div>
-      <span class="card-cta"><span>Launch 2-Player Chess</span><span>&rarr;</span></span>
+      <span class="card-cta"><span>Launch Chess &amp; SVG AI</span><span>&rarr;</span></span>
     </a>
   </section>
 

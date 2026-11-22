@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
 """
-Static Pure HTML + Inline CSS Generator for 2-Player FIDE Chess (`chess/index.html`).
+Static Pure HTML5 + CSS + SVG `<filter>` Generator for 1P / 2P FIDE Chess (`chess/index.html`).
 
-Generates a standalone HTML5 document with inline CSS, zero JavaScript, and zero SVG
-that executes full 2-player FIDE chess inside the browser's CSS cascade engine:
-  - 100-ply move-history pipeline (`.p > .m0 > .m1`) with O(1) direct-child `:has()`
-  - 13-stage Radix-3 Kogge-Stone ray evaluator (`.e0a .. .e11`) computing exact
-    X-ray King safety, pins, single & double checks, castling, en passant (including
-    horizontal discovered-check pins), promotions/underpromotions, checkmate,
-    stalemate, insufficient material, and the 50-move rule
-  - Interactive click-to-select, free piece switching, click-outside/self to deselect,
-    promotion selector bar (`Q / N / R / B`), LIFO Undo, New Game reset, Flip Board,
-    and 1-click tactical showcase presets.
+Generates a standalone zero-JavaScript HTML5 application combining:
+  1. Pure CSS `@property <integer>` FIDE Chess Referee (`.m0`, `.m1`, `.e0a .. .e12`):
+     100-ply state machine with Radix-3 Kogge-Stone ray legality, pins, single & double checks,
+     castling, en passant (including horizontal discovered-check pins), underpromotions,
+     checkmate, stalemate, insufficient material, 50-move rule, LIFO Undo, and `.e12` Ply-1 bus.
+  2. Pure HTML5 SVG `<filter>` 2-Ply CNN Minimax AI Opponent (`chess/svg_ai.py` + `chess/weights.json`):
+     Stockfish-distilled 3-layer 8-bit quantized CNN Value Network (`1,345` params, `r = 0.9033`)
+     evaluating `64 x 16 = 1,024` depth-2 FIDE-legal leaf boards in parallel via `<feConvolveMatrix>`,
+     `<feColorMatrix>`, `<feDisplacementMap>`, and `<feMorphology>` (`erode` + `dilate`).
 """
 
 from __future__ import annotations
@@ -34,10 +33,57 @@ from css_chess import (
     css_eq,
     state_to_css_vars,
 )
+from svg_ai import (
+    ASSETS_DIR,
+    COMPUTE_STAGE_IDS,
+    FO_H,
+    FO_W,
+    FO_X,
+    FO_Y,
+    LUT_BAR_POS,
+    LUT_SQ8B_POS,
+    LUT_SQ8W_POS,
+    LUT_VIS_BX_POS,
+    LUT_VIS_BY_POS,
+    LUT_VIS_FY_POS,
+    LUT_VIS_MX_POS,
+    LUT_VIS_MY_POS,
+    PHYS_LUT_SPECS,
+    STAGE_H,
+    STAGE_W,
+    VIS_BOARD_SZ,
+    VIS_BOARD_X,
+    VIS_BOARD_Y,
+    VIS_FEAT1_Y,
+    VIS_FEAT2_Y,
+    VIS_FEAT_H,
+    VIS_FEAT_W,
+    VIS_FEAT_X,
+    VIS_MAT_H,
+    VIS_MAT_W,
+    VIS_MAT_X,
+    VIS_MAT_Y,
+    VIS_QBAR_H,
+    VIS_QBAR_Y,
+    VIS_WINBAR_H,
+    VIS_WINBAR_W,
+    VIS_WINBAR_X,
+    VIS_WINBAR_Y,
+    WEIGHTS_DEFAULT_PATH,
+    compile_chess_ai_filters,
+    load_weights,
+    write_chess_ai_assets,
+)
 
 
 # Standard White-perspective visual order: Rank 8 (a8..h8 = 56..63) down to Rank 1 (a1..h1 = 0..7)
 VISUAL_SQ_ORDER: List[int] = [8 * r + f for r in range(7, -1, -1) for f in range(8)]
+
+GAME_MODES = (
+    ("1pw", "1P · Play White vs SVG AI", "Human = White · 2-Ply CNN plays Black"),
+    ("1pb", "1P · Play Black vs SVG AI", "Human = Black · 2-Ply CNN plays White"),
+    ("2p",  "2P · Local Pass & Play",    "Pure CSS FIDE referee for two humans"),
+)
 
 
 def minify_ui_css(raw: str) -> str:
@@ -47,24 +93,34 @@ def minify_ui_css(raw: str) -> str:
     return s.replace(";}", "}").strip()
 
 
-def generate_html(max_plies: int = DEFAULT_MAX_PLIES) -> str:
+def _chan_b_expr(role_sfx: str, sq_w: int, sq_b: int) -> str:
+    """Lossless `{0, 128, 255}` CSS channel formula for AI-normalized square `(ax, ay)`:
+    `0` = Opponent piece (`s1a` maps `0 -> 1/255`), `128` = Empty (`Z0`), `255` = AI piece!
+    """
+    dw = f"(var(--own_{role_sfx}{sq_w}) - var(--opp_{role_sfx}{sq_w}))"
+    db = f"(var(--own_{role_sfx}{sq_b}) - var(--opp_{role_sfx}{sq_b}))"
+    return f"calc(128 + 128*((1 - var(--turn))*{dw} + var(--turn)*{db}))"
+
+
+def generate_html(max_plies: int = DEFAULT_MAX_PLIES, weights_path: str = WEIGHTS_DEFAULT_PATH) -> str:
     spec = build_chess_css_spec()
+    w_spec = load_weights(weights_path)
+    metrics = w_spec.get("metrics", {})
+    lut_paths = write_chess_ai_assets(ASSETS_DIR)
+
+    svg_defs: List[str] = []
+    for dpr in (1, 2):
+        svg_defs.extend(compile_chess_ai_filters(w_spec, dpr))
+
     css: List[str] = []
 
     # -----------------------------------------------------------------------
     # A. @counter-style definitions & @property <integer> registrations
     # -----------------------------------------------------------------------
-    # Append U+FE0E (VS15 text presentation selector) so macOS/iOS render monochrome
-    # vector glyphs styled by CSS `color` instead of fixed-color 3D pawn emojis!
     piece_syms = '"" "♟\\fe0e" "♞\\fe0e" "♝\\fe0e" "♜\\fe0e" "♛\\fe0e" "♚\\fe0e" "" "" "♟\\fe0e" "♞\\fe0e" "♝\\fe0e" "♜\\fe0e" "♛\\fe0e" "♚\\fe0e"'
     css.append(f"@counter-style chess-sym{{system:fixed 0;symbols:{piece_syms}}}")
-
-    css.append(
-        '@counter-style turn-lbl{system:fixed 0;symbols:"White" "Black"}'
-    )
-    css.append(
-        '@counter-style promo-lbl{system:fixed 0;symbols:"" "" "Knight (♞)" "Bishop (♝)" "Rook (♜)" "Queen (♛)"}'
-    )
+    css.append('@counter-style turn-lbl{system:fixed 0;symbols:"White" "Black"}')
+    css.append('@counter-style promo-lbl{system:fixed 0;symbols:"" "" "Knight (♞)" "Bishop (♝)" "Rook (♜)" "Queen (♛)"}')
     css.append(
         '@counter-style game-status{system:fixed 0;symbols:'
         '"White to Move" '
@@ -77,278 +133,392 @@ def generate_html(max_plies: int = DEFAULT_MAX_PLIES) -> str:
         '"Draw — Insufficient Material (½–½)" '
         '"Draw — 50-Move Rule (½–½)"}'
     )
-
     sq_sym_list = " ".join(f'"{sq_name(sq)}"' for sq in range(64)) + ' "—"'
     css.append(f"@counter-style sq-coord{{system:fixed 0;symbols:{sq_sym_list}}}")
 
-    for prop in spec.registered_props:
+    extra_ui_props = ("--ai_side", "--ai_en", "--ai_peek", "--is_ai_turn", "--ai_show")
+    for prop in tuple(spec.registered_props) + extra_ui_props:
         css.append(f'@property {prop}{{syntax:"<integer>";initial-value:0;inherits:true}}')
 
     # -----------------------------------------------------------------------
-    # B. UI Theme, Board & HUD Styling (Zero JS, Zero SVG)
+    # B. UI Theme, Board, Controls & Fixed-1:1 SVG AI Stage Styling
     # -----------------------------------------------------------------------
-    ui_css = """
-*{box-sizing:border-box;margin:0;padding:0}
-body{
+    ui_css = f"""
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{
   font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
-  background:#0b0f17;color:#e2e8f0;line-height:1.5;padding:1.75rem 1rem 4rem;min-height:100vh
-}
-.chess-app{max-width:1060px;margin:0 auto;display:flex;flex-direction:column;gap:1.35rem}
+  background:#0b0f17;color:#e2e8f0;line-height:1.5;padding:1.45rem .9rem 3.8rem;min-height:100vh
+}}
+.chess-app{{
+  --ai_side:1;--ai_en:1;--ai_peek:0;
+  max-width:1244px;margin:0 auto;display:flex;flex-direction:column;gap:1.15rem
+}}
+.chess-app:has(#mode-1pb:checked){{--ai_side:0;--ai_en:1}}
+.chess-app:has(#mode-2p:checked){{--ai_en:0}}
+.chess-app:has(#ai-hint:checked){{--ai_peek:1}}
 
-header.hero{
+header.hero{{
   border:1px solid #1e293b;background:linear-gradient(180deg,#111827,#0f172a);
-  border-radius:14px;padding:1.4rem 1.65rem;box-shadow:0 12px 32px rgba(0,0,0,.35)
-}
-.back-row{margin-bottom:.65rem}
-.back-link{
-  display:inline-flex;align-items:center;gap:.35rem;font-size:.76rem;font-weight:600;
-  color:#94a3b8;text-decoration:none;padding:.22rem .62rem;border-radius:999px;
+  border-radius:14px;padding:1.25rem 1.5rem;box-shadow:0 12px 32px rgba(0,0,0,.35)
+}}
+.back-row{{margin-bottom:.55rem}}
+.back-link{{
+  display:inline-flex;align-items:center;gap:.35rem;font-size:.75rem;font-weight:600;
+  color:#94a3b8;text-decoration:none;padding:.2rem .6rem;border-radius:999px;
   background:#0b1120;border:1px solid #1e293b;transition:color .14s,border-color .14s,background .14s
-}
-.back-link:hover{color:#38bdf8;border-color:#38bdf8;background:#0f1d32}
-.badge-row{display:flex;flex-wrap:wrap;gap:.45rem;margin-bottom:.6rem}
-.badge{
-  font-size:.71rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
-  padding:.2rem .55rem;border-radius:999px;background:#1e293b;color:#38bdf8;border:1px solid #334155
-}
-.badge.green{color:#4ade80;border-color:#14532d;background:#052e16}
-.badge.purple{color:#c084fc;border-color:#4c1d95;background:#1e1035}
-.badge.amber{color:#fbbf24;border-color:#78350f;background:#271705}
-header.hero h1{font-size:1.62rem;font-weight:700;color:#f8fafc;letter-spacing:-.02em}
-header.hero p{margin-top:.4rem;color:#94a3b8;font-size:.92rem}
-header.hero code{color:#e2e8f0;background:#1e293b;padding:.1rem .32rem;border-radius:4px;font-size:.85em}
+}}
+.back-link:hover{{color:#38bdf8;border-color:#38bdf8;background:#0f1d32}}
+.badge-row{{display:flex;flex-wrap:wrap;gap:.42rem;margin-bottom:.55rem}}
+.badge{{
+  font-size:.69rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
+  padding:.18rem .52rem;border-radius:999px;background:#1e293b;color:#38bdf8;border:1px solid #334155
+}}
+.badge.green{{color:#4ade80;border-color:#14532d;background:#052e16}}
+.badge.purple{{color:#c084fc;border-color:#4c1d95;background:#1e1035}}
+.badge.amber{{color:#fbbf24;border-color:#78350f;background:#271705}}
+header.hero h1{{font-size:1.52rem;font-weight:700;color:#f8fafc;letter-spacing:-.02em}}
+header.hero p{{margin-top:.35rem;color:#94a3b8;font-size:.88rem}}
+header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-radius:4px;font-size:.84em}}
 
-.panel{
+.top-bar-grid{{display:grid;grid-template-columns:minmax(0,1.05fr) minmax(0,1.45fr);gap:1rem}}
+@media (max-width:1040px){{.top-bar-grid{{grid-template-columns:1fr}}}}
+
+.panel{{
   border:1px solid #1e293b;background:#111827;border-radius:14px;
-  padding:1.15rem 1.35rem;box-shadow:0 8px 24px rgba(0,0,0,.25)
-}
-.panel-head{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem;margin-bottom:.8rem}
-.panel-title{font-size:.8rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:#94a3b8}
-.panel-hint{font-size:.78rem;color:#64748b}
+  padding:1rem 1.2rem;box-shadow:0 8px 24px rgba(0,0,0,.25)
+}}
+.panel-head{{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.45rem;margin-bottom:.68rem}}
+.panel-title{{font-size:.77rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:#94a3b8}}
+.pill-row{{display:flex;flex-wrap:wrap;gap:.45rem;align-items:center}}
 
-.preset-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:.5rem}
-@media (max-width:960px){.preset-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
-@media (max-width:600px){.preset-grid{grid-template-columns:1fr}}
-.pr-lbl{
-  display:flex;flex-direction:column;gap:.2rem;padding:.55rem .68rem;border-radius:9px;
+.mode-grid{{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.45rem}}
+@media (max-width:620px){{.mode-grid{{grid-template-columns:1fr}}}}
+
+.preset-grid{{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:.45rem}}
+@media (max-width:760px){{.preset-grid{{grid-template-columns:repeat(2,minmax(0,1fr))}}}}
+
+.pr-lbl,.md-lbl{{
+  display:flex;flex-direction:column;gap:.16rem;padding:.5rem .62rem;border-radius:9px;
   background:#090d16;border:1px solid #263349;cursor:pointer;user-select:none;transition:all .12s
-}
-.pr-lbl:hover{border-color:#475569;background:#0f172a}
-.pr-top{display:flex;align-items:center;gap:.4rem;font-size:.77rem;font-weight:700;color:#e2e8f0}
-.pr-top input{accent-color:#38bdf8;cursor:pointer}
-.pr-sub{font-size:.7rem;color:#64748b;line-height:1.35}
+}}
+.pr-lbl:hover,.md-lbl:hover{{border-color:#475569;background:#0f172a}}
+.pr-top{{display:flex;align-items:center;gap:.36rem;font-size:.75rem;font-weight:700;color:#e2e8f0}}
+.pr-top input{{accent-color:#38bdf8;cursor:pointer}}
+.pr-sub{{font-size:.67rem;color:#64748b;line-height:1.32}}
 
-.flip-pill{
-  display:inline-flex;align-items:center;gap:.45rem;padding:.35rem .72rem;border-radius:8px;
-  background:#090d16;border:1px solid #334155;font-size:.78rem;font-weight:600;color:#cbd5e1;
+.flip-pill{{
+  display:inline-flex;align-items:center;gap:.4rem;padding:.28rem .62rem;border-radius:8px;
+  background:#090d16;border:1px solid #334155;font-size:.74rem;font-weight:600;color:#cbd5e1;
   cursor:pointer;user-select:none;transition:border-color .12s,background .12s
-}
-.flip-pill:hover{border-color:#38bdf8;background:#0f172a}
-.flip-pill input{accent-color:#38bdf8;cursor:pointer}
+}}
+.flip-pill:hover{{border-color:#38bdf8;background:#0f172a}}
+.flip-pill input{{accent-color:#38bdf8;cursor:pointer}}
+.chess-app:has(#ai-hint:checked) label[for=ai-hint]{{border-color:#a855f7;background:#1e1035;color:#e9d5ff}}
+.chess-app:has(#flip-bd:checked) label[for=flip-bd]{{border-color:#38bdf8;background:#0c2136;color:#bae6fd}}
 
-#mv{display:block}
-.st,.ui-ctrl{display:contents}
-#mv input{display:none}
+#mv{{display:block}}
+.st,.ui-ctrl{{display:contents}}
+#mv input{{display:none}}
 
-.arena{
-  display:grid;grid-template-columns:minmax(300px,544px) minmax(270px,1fr);
-  gap:1.35rem;align-items:start
-}
-@media (max-width:860px){.arena{grid-template-columns:1fr;justify-items:center}}
+.arena{{
+  display:grid;grid-template-columns:minmax(300px,496px) minmax(0,1fr);
+  gap:1.1rem;align-items:start
+}}
+@media (max-width:1160px){{.arena{{grid-template-columns:1fr;justify-items:center}}}}
 
-.board-shell{
-  position:relative;width:100%;max-width:544px;padding:12px;border-radius:16px;
+.play-col{{width:100%;max-width:496px;display:flex;flex-direction:column;gap:.85rem}}
+
+.status-card{{
+  border-radius:14px;padding:.9rem 1.1rem;contain:layout paint;
+  background:linear-gradient(180deg,#0f1c2e,#0b1320);
+  border:1px solid #1e3a5f;box-shadow:0 8px 24px rgba(0,0,0,.3)
+}}
+.status-top{{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:.4rem}}
+.status-kicker{{font-size:.69rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:#7dd3fc}}
+.status-main{{font-size:1.12rem;font-weight:800;color:#f8fafc;letter-spacing:-.01em}}
+.status-main i{{font-style:normal}}
+.status-main i::after{{content:counter(st,game-status)}}
+
+.ai-turn-Callout{{
+  margin-top:.55rem;padding:.48rem .72rem;border-radius:8px;
+  background:linear-gradient(90deg,rgba(168,85,247,.18),rgba(16,185,129,.18));
+  border:1px solid rgba(168,85,247,.55);font-size:.77rem;font-weight:600;color:#f1f5f9;
+  display:none;align-items:center;gap:.45rem
+}}
+.sw-dot{{display:inline-block;width:10px;height:10px;border-radius:3px;vertical-align:-1px}}
+.sw-from{{background:#a855f7;box-shadow:0 0 6px #a855f7}}
+.sw-to{{background:#10b981;box-shadow:0 0 6px #10b981}}
+
+.stat-grid{{
+  margin-top:.65rem;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:.42rem
+}}
+@media (max-width:520px){{.stat-grid{{grid-template-columns:repeat(2,minmax(0,1fr))}}}}
+.stat-box{{
+  background:#080c14;border:1px solid #1e293b;border-radius:8px;padding:.4rem .55rem
+}}
+.stat-lbl{{font-size:.62rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#64748b}}
+.stat-val{{
+  margin-top:.06rem;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-size:.84rem;font-weight:700;color:#e2e8f0
+}}
+.stat-val i{{font-style:normal}}
+.sv-turn i::after{{content:counter(tn,turn-lbl)}}
+.sv-ply i::after{{content:counter(pl)}}
+.sv-hmc i::after{{content:counter(hm) "/100"}}
+.sv-last i::after{{content:counter(lf,sq-coord) "→" counter(lt,sq-coord)}}
+
+.board-shell{{
+  position:relative;width:100%;max-width:496px;padding:11px;border-radius:16px;contain:layout paint;
   background:linear-gradient(180deg,#162032,#0e1524);border:1px solid #28364d;
   box-shadow:0 16px 40px rgba(0,0,0,.45)
-}
-.board-frame{
+}}
+.board-frame{{
   position:relative;width:100%;aspect-ratio:1/1;border-radius:8px;overflow:hidden;
   border:2px solid #334155;transition:transform .28s cubic-bezier(.22,1,.36,1)
-}
-.chess-app:has(#flip-bd:checked) .board-frame{transform:rotate(180deg)}
+}}
+.chess-app:has(#flip-bd:checked) .board-frame{{transform:rotate(180deg)}}
 
-.board-grid{
+.board-grid{{
   position:absolute;inset:0;display:grid;
   grid-template-columns:repeat(8,1fr);grid-template-rows:repeat(8,1fr)
-}
-.sq{
+}}
+.sq{{
   position:relative;display:flex;align-items:center;justify-content:center;
   user-select:none;overflow:hidden
-}
-.sq.lgt{background:#dce4ee}
-.sq.drk{background:#475a74}
-
-/* Subtle amber last-move tint */
-.sq .lm{
-  position:absolute;inset:0;background:rgba(250,204,21,.36);pointer-events:none
-}
-/* Sky-blue active selection highlight */
-.sq .sl{
-  position:absolute;inset:0;background:rgba(56,189,248,.42);
-  box-shadow:inset 0 0 0 3px #0284c7;pointer-events:none
-}
-/* Crimson radial glow when King is in Check */
-.sq .ck{
+}}
+.sq.lgt{{background:#dce4ee}}
+.sq.drk{{background:#475a74}}
+.sq .lm{{position:absolute;inset:0;background:rgba(250,204,21,.36);pointer-events:none}}
+.sq .sl{{position:absolute;inset:0;background:rgba(56,189,248,.42);box-shadow:inset 0 0 0 3px #0284c7;pointer-events:none}}
+.sq .ck{{
   position:absolute;inset:0;
   background:radial-gradient(circle,rgba(239,68,68,.9) 18%,rgba(220,38,38,.55) 62%,transparent 100%);
   box-shadow:inset 0 0 0 3px #ef4444;pointer-events:none
-}
-
-.sq-in{
+}}
+.sq-in{{
   position:relative;z-index:2;width:100%;height:100%;
   display:flex;align-items:center;justify-content:center;
   transition:transform .28s cubic-bezier(.22,1,.36,1);pointer-events:none
-}
-.chess-app:has(#flip-bd:checked) .sq-in{transform:rotate(180deg)}
-
-.pc{
-  font-style:normal;font-size:clamp(1.85rem,5.3vw,2.95rem);line-height:1;
+}}
+.chess-app:has(#flip-bd:checked) .sq-in{{transform:rotate(180deg)}}
+.pc{{
+  font-style:normal;font-size:clamp(1.85rem,5vw,2.85rem);line-height:1;
   font-variant-emoji:text;transform:translateY(-1px)
-}
-.pc::after{content:counter(p,chess-sym)}
-
-/* Coordinate labels on Rank 1..8 (a-file) & File a..h (rank 1) */
-.crd{
+}}
+.pc::after{{content:counter(p,chess-sym)}}
+.crd{{
   position:absolute;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
-  font-size:.64rem;font-weight:800;line-height:1;pointer-events:none;opacity:.82
-}
-.sq.lgt .crd{color:#3b4d66}
-.sq.drk .crd{color:#cbd5e1}
-.crd-r{top:3px;left:4px}
-.crd-f{bottom:3px;right:4px}
-
-/* Quiet legal-move center dot & legal-capture target ring */
-.mv-dot{
+  font-size:.63rem;font-weight:800;line-height:1;pointer-events:none;opacity:.82
+}}
+.sq.lgt .crd{{color:#3b4d66}}
+.sq.drk .crd{{color:#cbd5e1}}
+.crd-r{{top:3px;left:4px}}
+.crd-f{{bottom:3px;right:4px}}
+.mv-dot{{
   position:absolute;z-index:3;width:30%;height:30%;border-radius:50%;
-  background:rgba(16,185,129,.88);box-shadow:0 1px 4px rgba(0,0,0,.35);
-  pointer-events:none
-}
-.cp-ring{
+  background:rgba(16,185,129,.88);box-shadow:0 1px 4px rgba(0,0,0,.35);pointer-events:none
+}}
+.cp-ring{{
   position:absolute;inset:5%;z-index:3;border-radius:50%;
-  border:4px solid rgba(239,68,68,.88);box-shadow:0 0 8px rgba(239,68,68,.35);
-  pointer-events:none
-}
+  border:4px solid rgba(239,68,68,.88);box-shadow:0 0 8px rgba(239,68,68,.35);pointer-events:none
+}}
 
-/* Hit-target overlays: only active ply .ov{k} has display:grid! */
-.ov-stack{position:absolute;inset:0;z-index:10}
-.ov{
-  display:none;position:absolute;inset:0;
-  grid-template-columns:repeat(8,1fr);grid-template-rows:repeat(8,1fr)
-}
-.ov-bg{position:absolute;inset:0;z-index:1;cursor:default}
-.ov i{position:relative;z-index:2;display:block;pointer-events:none}
-.ov label.lf,.ov label.lt{
-  position:absolute;top:0;display:block;cursor:pointer;pointer-events:auto
-}
-.ov label.lf{z-index:2}
-.ov label.lt{z-index:3}
-.ov label.lf:hover{background:rgba(56,189,248,.16)}
-.ov label.lt:hover{background:rgba(16,185,129,.22)}
+.ov-stack{{position:absolute;inset:0;z-index:10}}
+.ov{{display:none;position:absolute;inset:0;grid-template-columns:repeat(8,1fr);grid-template-rows:repeat(8,1fr)}}
+.ov-bg{{position:absolute;inset:0;z-index:1;cursor:default}}
+.ov i{{position:relative;z-index:2;display:block;pointer-events:none}}
+.ov label.lf,.ov label.lt{{position:absolute;top:0;display:block;cursor:pointer;pointer-events:auto}}
+.ov label.lf{{z-index:2}}
+.ov label.lt{{z-index:3}}
+.ov label.lf:hover{{background:rgba(56,189,248,.16)}}
+.ov label.lt:hover{{background:rgba(16,185,129,.22)}}
 
-/* Game-over board shield + floating banner */
-.term-banner{
+.term-banner{{
   position:absolute;inset:auto 6% 6% 6%;z-index:20;
-  padding:.75rem 1rem;border-radius:11px;text-align:center;
+  padding:.72rem .95rem;border-radius:11px;text-align:center;
   background:rgba(9,13,22,.93);border:1px solid #38bdf8;
-  box-shadow:0 12px 32px rgba(0,0,0,.65);backdrop-filter:blur(6px);
-  pointer-events:none
-}
-.term-banner strong{
-  display:block;font-size:.98rem;color:#f8fafc;letter-spacing:.01em
-}
-.term-banner strong::after{content:counter(st,game-status)}
-.term-banner span{font-size:.76rem;color:#94a3b8}
+  box-shadow:0 12px 32px rgba(0,0,0,.65);backdrop-filter:blur(6px);pointer-events:none
+}}
+.term-banner strong{{display:block;font-size:.96rem;color:#f8fafc}}
+.term-banner strong::after{{content:counter(st,game-status)}}
+.term-banner span{{font-size:.74rem;color:#94a3b8}}
 
-/* Right-hand HUD & Controls Column */
-.hud-col{width:100%;display:flex;flex-direction:column;gap:1rem}
-
-.status-card{
-  border-radius:14px;padding:1.15rem 1.3rem;
-  background:linear-gradient(180deg,#0f1c2e,#0b1320);
-  border:1px solid #1e3a5f;box-shadow:0 8px 24px rgba(0,0,0,.3)
-}
-.status-kicker{
-  font-size:.71rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:#7dd3fc
-}
-.status-main{
-  margin-top:.3rem;font-size:1.22rem;font-weight:800;color:#f8fafc;letter-spacing:-.01em
-}
-.status-main i{font-style:normal}
-.status-main i::after{content:counter(st,game-status)}
-
-.stat-grid{
-  margin-top:.9rem;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.55rem
-}
-.stat-box{
-  background:#080c14;border:1px solid #1e293b;border-radius:9px;padding:.55rem .75rem
-}
-.stat-lbl{font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#64748b}
-.stat-val{
-  margin-top:.12rem;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
-  font-size:.96rem;font-weight:700;color:#e2e8f0
-}
-.stat-val i{font-style:normal}
-.sv-turn i::after{content:counter(tn,turn-lbl)}
-.sv-ply i::after{content:counter(pl)}
-.sv-hmc i::after{content:counter(hm) " / 100"}
-.sv-sel i::after{content:counter(slc,sq-coord)}
-.sv-last i::after{content:counter(lf,sq-coord) " → " counter(lt,sq-coord)}
-
-/* Action buttons (LIFO Undo + Scoped Reset) */
-.ctrl-card{
-  border:1px solid #1e293b;background:#111827;border-radius:14px;padding:1.1rem 1.25rem;
-  display:flex;flex-direction:column;gap:.85rem
-}
-.btn-row{display:flex;flex-wrap:wrap;gap:.6rem}
-.btn{
-  display:inline-flex;align-items:center;justify-content:center;gap:.4rem;
-  padding:.58rem .95rem;border-radius:9px;font-size:.82rem;font-weight:700;
+.ctrl-card{{
+  border:1px solid #1e293b;background:#111827;border-radius:14px;padding:.85rem 1.05rem;
+  display:flex;flex-direction:column;gap:.68rem;contain:layout paint
+}}
+.btn-row{{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:.5rem}}
+.btn-grp{{display:flex;flex-wrap:wrap;gap:.5rem}}
+.btn{{
+  display:inline-flex;align-items:center;justify-content:center;gap:.38rem;
+  padding:.48rem .85rem;border-radius:8px;font-size:.79rem;font-weight:700;
   cursor:pointer;user-select:none;border:1px solid #334155;background:#162032;color:#f8fafc;
   transition:background .13s,border-color .13s,transform .1s
-}
-.btn:hover{background:#1e293b;border-color:#38bdf8;color:#7dd3fc}
-.btn:active{transform:translateY(1px)}
-.btn.rst{border-color:#7f1d1d;background:#231115;color:#fca5a5}
-.btn.rst:hover{border-color:#ef4444;background:#35151b;color:#fecaca}
-.undo-btn{display:none;border-color:#0369a1;background:#0c2438;color:#7dd3fc}
-.undo-disabled{
-  display:none;align-items:center;gap:.4rem;padding:.58rem .95rem;border-radius:9px;
-  font-size:.82rem;font-weight:600;border:1px solid #1e293b;background:#0b0f17;color:#475569
-}
-#t0n:checked~.arena .undo-disabled{display:inline-flex}
+}}
+.btn:hover{{background:#1e293b;border-color:#38bdf8;color:#7dd3fc}}
+.btn:active{{transform:translateY(1px)}}
+.btn.rst{{border-color:#7f1d1d;background:#231115;color:#fca5a5}}
+.btn.rst:hover{{border-color:#ef4444;background:#35151b;color:#fecaca}}
+.undo-btn{{display:none;border-color:#0369a1;background:#0c2438;color:#7dd3fc}}
+.undo-disabled{{
+  display:none;align-items:center;gap:.38rem;padding:.48rem .85rem;border-radius:8px;
+  font-size:.79rem;font-weight:600;border:1px solid #1e293b;background:#0b0f17;color:#475569
+}}
+#t0n:checked~.arena .undo-disabled{{display:inline-flex}}
+.sel-pill{{font-size:.73rem;color:#94a3b8;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}}
+.sel-pill i{{font-style:normal;color:#38bdf8;font-weight:700}}
+.sel-pill i::after{{content:counter(slc,sq-coord)}}
 
-/* Promotion piece chooser bar */
-.promo-box{
-  padding:.8rem .9rem;border-radius:10px;background:#090d16;border:1px solid #1e293b;
+.promo-box{{
+  padding:.62rem .78rem;border-radius:9px;background:#090d16;border:1px solid #1e293b;
   transition:border-color .15s,box-shadow .15s
-}
-.promo-head{display:flex;justify-content:space-between;align-items:center;gap:.4rem;margin-bottom:.5rem}
-.promo-title{font-size:.73rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#94a3b8}
-.promo-cur{font-size:.75rem;font-weight:700;color:#fbbf24}
-.promo-cur i{font-style:normal}
-.promo-cur i::after{content:counter(pr,promo-lbl)}
-.pr-bar{display:none;grid-template-columns:repeat(4,1fr);gap:.4rem}
-.pr-opt{
-  display:flex;flex-direction:column;align-items:center;gap:.1rem;padding:.42rem .3rem;
+}}
+.promo-head{{display:flex;justify-content:space-between;align-items:center;gap:.4rem;margin-bottom:.42rem}}
+.promo-title{{font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#94a3b8}}
+.promo-cur{{font-size:.73rem;font-weight:700;color:#fbbf24}}
+.promo-cur i{{font-style:normal}}
+.promo-cur i::after{{content:counter(pr,promo-lbl)}}
+.pr-bar{{display:none;grid-template-columns:repeat(4,1fr);gap:.38rem}}
+.pr-opt{{
+  display:flex;align-items:center;justify-content:center;gap:.28rem;padding:.34rem .25rem;
   border-radius:7px;background:#111827;border:1px solid #28364d;cursor:pointer;
-  color:#cbd5e1;font-size:.74rem;font-weight:600;user-select:none;transition:all .12s
-}
-.pr-opt:hover{border-color:#fbbf24;color:#fef08a}
-.pr-opt b{font-size:1.2rem;line-height:1.1;font-variant-emoji:text}
+  color:#cbd5e1;font-size:.72rem;font-weight:600;user-select:none;transition:all .12s
+}}
+.pr-opt:hover{{border-color:#fbbf24;color:#fef08a}}
+.pr-opt b{{font-size:1.08rem;line-height:1;font-variant-emoji:text}}
 
-.rules-note{
-  font-size:.77rem;color:#64748b;line-height:1.5;border-top:1px solid #1e293b;padding-top:.75rem
-}
-.rules-note strong{color:#94a3b8}
+/* Fixed 1:1 SVG 2-Ply CNN Minimax Engine Stage (`664 x 636` CSS px — NEVER rescaled!) */
+.ai-col{{width:100%;max-width:{STAGE_W + 24}px}}
+.ai-panel{{
+  border:1px solid #1e3a5f;background:#0b111e;border-radius:14px;
+  padding:.85rem .72rem .9rem;box-shadow:0 12px 32px rgba(0,0,0,.38)
+}}
+.ai-head{{
+  display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;
+  gap:.4rem;padding:0 .35rem .6rem
+}}
+.ai-title{{font-size:.78rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:#c084fc}}
+.ai-sub{{font-size:.72rem;color:#64748b;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}}
+.ai-scroll{{overflow-x:auto}}
+.ai-stage-shell{{
+  position:relative;width:{STAGE_W}px;height:{STAGE_H}px;margin:0 auto;contain:layout paint;
+  border-radius:11px;background:#060a13;border:1px solid #1e293b;overflow:hidden
+}}
+.ai-fstage{{position:absolute;inset:0;width:{STAGE_W}px;height:{STAGE_H}px;display:block}}
+.ai-fstage image{{image-rendering:pixelated;pointer-events:none}}
+.ai-luts-2x,.sq8-flip{{display:none}}
+.chess-app:has(#flip-bd:checked) .sq8-norm{{display:none}}
+.chess-app:has(#flip-bd:checked) .sq8-flip{{display:inline}}
+
+/* Bypass GPU filter chain in 2-Player mode unless `Peek AI Hint` is checked! */
+.chess-app:has(#mode-2p:checked):not(:has(#ai-hint:checked)) .ai-fstage g{{filter:none!important}}
+.chess-app:has(#mode-2p:checked):not(:has(#ai-hint:checked)) .ai-fstage{{opacity:0}}
+
+/* Static-flow neutral-gray (`R == G == B`, Display-P3-immune!) `<foreignObject>` CSS-to-SVG pixel bridge */
+.ai-src-wrap{{width:{FO_W}px;height:{FO_H}px;background:transparent}}
+.ai-src-wrap i,.ai-meta{{background:rgb(var(--g),var(--g),var(--g))}}
+.ai-src-r1{{display:flex;align-items:flex-start;height:12px}}
+.ai-bch{{
+  display:grid;grid-template-columns:repeat(8,1px);grid-template-rows:repeat(8,1px);
+  width:10px;height:10px;padding:0 2px 2px 0;margin-right:2px;background:rgb(128,128,128)
+}}
+.ai-bch i{{display:block;width:1px;height:1px}}
+.ai-meta{{width:2px;height:2px;flex:0 0 2px;margin-right:2px}}
+.ai-m1w{{display:flex;width:640px;height:2px}}
+.ai-m1w i{{flex:0 0 10px;height:2px;display:block}}
+.ai-m1c-row{{display:flex;align-items:flex-start;height:2px}}
+.ai-m1c{{display:flex;width:64px;height:2px;margin-right:4px}}
+.ai-m1c i{{flex:0 0 1px;height:2px;display:block}}
+
+@media (-webkit-min-device-pixel-ratio:1.5),(min-resolution:1.5dppx){{
+  .ai-luts-1x{{display:none}}
+  .ai-luts-2x{{display:inline}}
+}}
+
+/* HTML HUD Overlay inside `.ai-stage-shell` (titles, coordinates, legend, spoiler shield) */
+.ai-hud{{position:absolute;inset:0;pointer-events:none;font-family:ui-sans-serif,-apple-system,sans-serif}}
+.hud-ttl{{
+  position:absolute;font-size:.7rem;font-weight:800;text-transform:uppercase;
+  letter-spacing:.07em;color:#e2e8f0
+}}
+.hud-sub{{
+  position:absolute;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-size:.63rem;color:#64748b
+}}
+.bd-files{{
+  position:absolute;left:{VIS_BOARD_X}px;top:{VIS_BOARD_Y + VIS_BOARD_SZ + 4}px;width:{VIS_BOARD_SZ}px;
+  display:grid;grid-template-columns:repeat(8,1fr);text-align:center;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.62rem;font-weight:700;color:#64748b
+}}
+.bd-ranks{{
+  position:absolute;left:{VIS_BOARD_X - 14}px;top:{VIS_BOARD_Y}px;height:{VIS_BOARD_SZ}px;
+  display:grid;grid-template-rows:repeat(8,1fr);align-items:center;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.62rem;font-weight:700;color:#64748b
+}}
+.chess-app:has(#flip-bd:checked) .bd-files{{direction:rtl}}
+.chess-app:has(#flip-bd:checked) .bd-ranks{{display:flex;flex-direction:column-reverse;justify-content:space-around}}
+
+/* Spoiler shield over the 8x8 Move Map when it is the Human's turn (unless `Peek AI Hint` is checked!) */
+.ai-shield{{
+  position:absolute;left:{VIS_BOARD_X - 1}px;top:{VIS_BOARD_Y - 1}px;
+  width:{VIS_BOARD_SZ + 2}px;height:{VIS_BOARD_SZ + 2}px;border-radius:4px;
+  background:rgba(8,13,25,.92);border:1px solid #1e293b;backdrop-filter:blur(5px);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  padding:1rem;text-align:center;gap:.4rem;transition:opacity .18s
+}}
+.ai-shield b{{font-size:.82rem;color:#e2e8f0}}
+.ai-shield span{{font-size:.7rem;color:#94a3b8;line-height:1.4}}
+
+.ai-2p-cover{{
+  position:absolute;inset:0;background:rgba(6,10,19,.95);
+  display:none;flex-direction:column;align-items:center;justify-content:center;
+  padding:2rem;text-align:center;gap:.55rem
+}}
+.chess-app:has(#mode-2p:checked):not(:has(#ai-hint:checked)) .ai-2p-cover{{display:flex}}
+.ai-2p-cover b{{font-size:.95rem;color:#f8fafc}}
+.ai-2p-cover span{{font-size:.78rem;color:#94a3b8;max-width:420px}}
+
+.wb-ticks{{
+  position:absolute;left:{VIS_WINBAR_X}px;top:{VIS_WINBAR_Y + VIS_WINBAR_H + 4}px;width:{VIS_WINBAR_W}px;
+  display:flex;justify-content:space-between;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.61rem;color:#64748b
+}}
+.hm-legend{{
+  position:absolute;left:{VIS_MAT_X}px;top:{VIS_WINBAR_Y - 2}px;width:{VIS_MAT_W}px;
+  display:flex;flex-wrap:wrap;gap:.55rem;align-items:center;
+  font-size:.67rem;color:#94a3b8
+}}
+.lg-sw{{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px;vertical-align:-1px}}
+
+.arch-card{{
+  position:absolute;left:{VIS_BOARD_X}px;top:{VIS_FEAT1_Y}px;width:{VIS_BOARD_SZ}px;height:{VIS_FEAT2_Y + VIS_FEAT_H - VIS_FEAT1_Y}px;
+  border-radius:8px;background:#09101d;border:1px solid #1e293b;padding:.68rem .78rem;
+  display:flex;flex-direction:column;justify-content:space-between
+}}
+.arch-card h4{{font-size:.69rem;text-transform:uppercase;letter-spacing:.07em;color:#7dd3fc}}
+.arch-list{{list-style:none;display:flex;flex-direction:column;gap:.26rem;font-size:.66rem;color:#94a3b8;line-height:1.34}}
+.arch-list code{{color:#e2e8f0;font-size:.64rem}}
 """
     css.append(minify_ui_css(ui_css))
 
+    # SVG stage filter bindings (1x and 2x Retina)
+    hidpi_sels: List[str] = []
+    for sid in COMPUTE_STAGE_IDS:
+        css.append(f".ai-{sid}{{filter:url(#ai-{sid}-1x)}}")
+        hidpi_sels.append(f".ai-{sid}{{filter:url(#ai-{sid}-2x)}}")
+    css.append(f"@media (-webkit-min-device-pixel-ratio:1.5),(min-resolution:1.5dppx){{{''.join(hidpi_sels)}}}")
+
     # -----------------------------------------------------------------------
-    # C. Initial Position, Presets, & Scoped O(1) Ply Input Rules
+    # C. Initial Position, Modes, Presets, & Scoped O(1) Ply Input Rules
     # -----------------------------------------------------------------------
     std_vars = state_to_css_vars(parse_fen(START_FEN))
     init_decls = ";".join(f"{k}:{v}" for k, v in sorted(std_vars.items()))
     css.append(f".init{{{init_decls}}}")
+
+    md_card_sels = ",".join(f".chess-app:has(#mode-{mid}:checked) label[for=mode-{mid}]" for mid, *_ in GAME_MODES)
+    md_sub_sels = ",".join(f".chess-app:has(#mode-{mid}:checked) label[for=mode-{mid}] .pr-sub" for mid, *_ in GAME_MODES)
+    css.append(f"{md_card_sels}{{border-color:#c084fc;background:#1b1030;box-shadow:0 0 0 1px rgba(192,132,252,.28)}}")
+    css.append(f"{md_sub_sels}{{color:#d8b4fe}}")
 
     pr_card_sels = ",".join(f".chess-app:has(#pr-{pid}:checked) label[for=pr-{pid}]" for pid, *_ in PRESETS)
     pr_sub_sels = ",".join(f".chess-app:has(#pr-{pid}:checked) label[for=pr-{pid}] .pr-sub" for pid, *_ in PRESETS)
@@ -363,7 +533,6 @@ header.hero code{color:#e2e8f0;background:#1e293b;padding:.1rem .32rem;border-ra
         if p_decls:
             css.append(f".chess-app:has(#pr-{pid}:checked) .init{{{p_decls}}}")
 
-    # Shared ply input decoding via pure forward sibling combinator `~` (ZERO `:has()`!)
     css.append(".p{--in_f:64;--in_t:64;--in_c:0;--in_pr:5}")
     for sq in range(64):
         css.append(f".f{sq}:checked~.p{{--in_f:{sq}}}")
@@ -372,7 +541,6 @@ header.hero code{color:#e2e8f0;background:#1e293b;padding:.1rem .32rem;border-ra
     css.append(".pb:checked~.p{--in_pr:3}")
     css.append(".pr:checked~.p{--in_pr:4}")
 
-    # Active ply selector rules using O(1) adjacent sibling `+` on `#t0n..#t99n` (ZERO `:has()`!)
     css.append("#t0n:checked~.arena .ov0,#t0n:checked~.arena .pb0{display:grid}")
     for k in range(1, max_plies):
         sel_k = f"#t{k - 1}n:not(:checked)+#t{k}n:checked~.arena"
@@ -380,7 +548,6 @@ header.hero code{color:#e2e8f0;background:#1e293b;padding:.1rem .32rem;border-ra
         css.append(f"{sel_k} .ub{k}{{display:inline-flex}}")
     css.append(f"#t{max_plies - 1}n:not(:checked)~.arena .ub{max_plies}{{display:inline-flex}}")
 
-    # Highlight active promotion choice button via `--cur_pr`
     for code, cls_s in ((5, "pq"), (2, "pn"), (4, "pr"), (3, "pb")):
         eq_pr = css_eq("var(--cur_pr)", code)
         css.append(
@@ -396,14 +563,14 @@ header.hero code{color:#e2e8f0;background:#1e293b;padding:.1rem .32rem;border-ra
     )
 
     # -----------------------------------------------------------------------
-    # D. Compiled Chess Pipeline Stages (`.m0`, `.m1`, `.e0a .. .e11`)
+    # D. Compiled Chess Pipeline Stages (`.m0`, `.m1`, `.e0a .. .e12`)
     # -----------------------------------------------------------------------
     for cls_name, rules in spec.stage_defs.items():
         body = ";".join(f"{lhs}:{rhs}" for lhs, rhs in rules)
         css.append(f".{cls_name}{{{body}}}")
 
     # -----------------------------------------------------------------------
-    # E. Per-Square Visual Board & Hit-Target Rules (`0..63`)
+    # E. Per-Square Board, Hit-Targets, & `<foreignObject>` CSS-to-SVG Bridge
     # -----------------------------------------------------------------------
     for sq in range(64):
         bu = f"var(--b{sq})"
@@ -411,7 +578,6 @@ header.hero code{color:#e2e8f0;background:#1e293b;padding:.1rem .32rem;border-ra
         is_last = f"min(1,{css_eq('var(--last_f)', sq)} + {css_eq('var(--last_t)', sq)})"
         quiet_dot = f"calc(var(--leg_{sq})*(1 - var(--cap_{sq})))"
 
-        # Piece glyph counter + ivory vs obsidian color & crisp shadow
         css.append(
             f".sq{sq} .pc{{"
             f"counter-reset:p {bu};"
@@ -425,7 +591,6 @@ header.hero code{color:#e2e8f0;background:#1e293b;padding:.1rem .32rem;border-ra
         css.append(f".sq{sq} .mv-dot{{opacity:{quiet_dot};transform:scale({quiet_dot})}}")
         css.append(f".sq{sq} .cp-ring{{opacity:var(--cap_{sq});transform:scale(var(--cap_{sq}))}}")
 
-        # Geometric hit-target gating inside active `.ov{k}`: off-screen + 0x0 when inactive!
         css.append(
             f".lf{sq}{{"
             f"left:calc(-9999px*(1 - var(--can_sel_{sq})));"
@@ -439,11 +604,37 @@ header.hero code{color:#e2e8f0;background:#1e293b;padding:.1rem .32rem;border-ra
             f"height:calc(100%*var(--leg_{sq}))}}"
         )
 
-    # HUD live counter bindings & terminal banner visibility
+    # `<foreignObject>` Display-P3-immune neutral-gray (`R == G == B`) root board & `.e12` Ply-1 move bus
+    for ay in range(8):
+        for ax in range(8):
+            a = 8 * ay + ax
+            sq_w = 8 * ay + ax
+            sq_b = 8 * (7 - ay) + ax
+            for ch_idx, r_sfx in enumerate(("p", "n", "b", "r", "q", "k")):
+                css.append(f".ach{ch_idx}_{a}{{--g:{_chan_b_expr(r_sfx, sq_w, sq_b)}}}")
+
+    for v1 in range(64):
+        css.append(f".amu{v1}{{--g:calc(128 + var(--m1_u_{v1}))}}")
+        css.append(f".amv{v1}{{--g:calc(128 + var(--m1_v_{v1}))}}")
+        css.append(f".amk{v1}{{--g:calc(128 + var(--m1_c_{v1}))}}")
+    css.append(".ai-mt-turn{--g:calc(128 + 127*var(--turn))}")
+    css.append(".ai-mt-chk{--g:calc(128 + 127*var(--in_check))}")
+    css.append(".ai-mt-term{--g:calc(128 + 127*var(--is_terminal))}")
+
+    # Live AI-turn detection (`--is_ai_turn == 1` iff 1P mode & live game & `--turn == --ai_side`)
     css.append(
         ".arena{"
+        "--is_ai_turn:calc(var(--ai_en)*(1 - var(--is_terminal))*(1 - (var(--turn) - var(--ai_side))*(var(--turn) - var(--ai_side))));"
+        "--ai_show:min(1,var(--is_ai_turn) + var(--ai_peek))}"
+        ".play-col{"
         "counter-reset:st var(--status) tn var(--turn) pl var(--ply) hm var(--hmc) "
         "slc var(--cur_from) lf var(--last_f) lt var(--last_t) pr var(--cur_pr)}"
+    )
+    css.append(
+        ".ai-shield{opacity:calc(1 - var(--ai_show))}"
+        ".ai-turn-Callout{display:flex;opacity:var(--is_ai_turn);max-height:calc(80px*var(--is_ai_turn));"
+        "padding:calc(.48rem*var(--is_ai_turn)) .72rem;margin-top:calc(.55rem*var(--is_ai_turn));"
+        "border-width:calc(1px*var(--is_ai_turn));overflow:hidden}"
     )
     css.append(
         ".term-banner{"
@@ -452,12 +643,24 @@ header.hero code{color:#e2e8f0;background:#1e293b;padding:.1rem .32rem;border-ra
     )
     css.append(
         ".status-card{"
-        "border-color:rgb(calc(30 + 209*min(1,var(--in_check) + var(--checkmate))),calc(58 + 10*var(--is_terminal)),calc(95 - 27*var(--in_check)))}"
+        "border-color:rgb(calc(30 + 138*var(--is_ai_turn) + 209*min(1,var(--in_check) + var(--checkmate))),"
+        "calc(58 + 27*var(--is_ai_turn) + 10*var(--is_terminal)),"
+        "calc(95 + 152*var(--is_ai_turn) - 27*var(--in_check)))}"
     )
 
     # -----------------------------------------------------------------------
-    # F. HTML Markup Assembly (Presets, 100-Ply Pipeline, Evaluators, & Board)
+    # F. HTML Markup Assembly (Modes, Presets, 100-Ply Pipeline, Board & SVG AI)
     # -----------------------------------------------------------------------
+    mode_cards_html: List[str] = []
+    for idx, (mid, title, sub) in enumerate(GAME_MODES):
+        chk = " checked" if idx == 0 else ""
+        mode_cards_html.append(
+            f'<label class=md-lbl for=mode-{mid}>'
+            f'<span class=pr-top><input type=radio name=gmode id=mode-{mid}{chk}>'
+            f'<span>{html.escape(title)}</span></span>'
+            f'<span class=pr-sub>{html.escape(sub)}</span></label>'
+        )
+
     preset_cards_html: List[str] = []
     for idx, (pid, title, _fen, sub) in enumerate(PRESETS):
         chk = " checked" if idx == 0 else ""
@@ -468,7 +671,6 @@ header.hero code{color:#e2e8f0;background:#1e293b;padding:.1rem .32rem;border-ra
             f'<span class=pr-sub>{html.escape(sub)}</span></label>'
         )
 
-    # Build visual 8x8 board cells (64 squares total)
     board_cells_html: List[str] = []
     for sq in VISUAL_SQ_ORDER:
         r, f = divmod(sq, 8)
@@ -486,7 +688,6 @@ header.hero code{color:#e2e8f0;background:#1e293b;padding:.1rem .32rem;border-ra
             f'</div>'
         )
 
-    # Build per-ply overlays `.ov0 .. .ov{T-1}`, promo bars `.pb0 .. .pb{T-1}`, and undo buttons
     overlays_html: List[str] = []
     promo_bars_html: List[str] = []
     undo_btns_html: List[str] = ['<span class=undo-disabled>&#x21B6; Undo Move</span>']
@@ -512,12 +713,149 @@ header.hero code{color:#e2e8f0;background:#1e293b;padding:.1rem .32rem;border-ra
             f'<label class="btn undo-btn ub{k + 1}" for=t{k}n>&#x21B6; Undo Move</label>'
         )
 
+    # Assemble `<g class="ai-luts-1x">`, `<g class="ai-luts-2x">`, and `<foreignObject>` inside nested `<g>` stages
+    luts_1x_imgs: List[str] = []
+    luts_2x_imgs: List[str] = []
+    for key, (lx, ly), pw, ph in PHYS_LUT_SPECS:
+        if key in ("sq8w", "sq8b"):
+            fk = key + "f"
+            luts_1x_imgs.append(
+                f'<image class=sq8-norm href="{lut_paths[key]}" x="{lx}" y="{ly}" width="{pw}" height="{ph}" preserveAspectRatio="none"/>'
+                f'<image class=sq8-flip href="{lut_paths[fk]}" x="{lx}" y="{ly}" width="{pw}" height="{ph}" preserveAspectRatio="none"/>'
+            )
+            luts_2x_imgs.append(
+                f'<image class=sq8-norm href="{lut_paths[key]}" x="{lx}" y="{ly}" width="{pw // 2}" height="{ph // 2}" preserveAspectRatio="none"/>'
+                f'<image class=sq8-flip href="{lut_paths[fk]}" x="{lx}" y="{ly}" width="{pw // 2}" height="{ph // 2}" preserveAspectRatio="none"/>'
+            )
+        else:
+            luts_1x_imgs.append(
+                f'<image href="{lut_paths[key]}" x="{lx}" y="{ly}" width="{pw}" height="{ph}" preserveAspectRatio="none"/>'
+            )
+            luts_2x_imgs.append(
+                f'<image href="{lut_paths[key]}" x="{lx}" y="{ly}" width="{pw // 2}" height="{ph // 2}" preserveAspectRatio="none"/>'
+            )
+
+    for dpr, dst_lst in ((1, luts_1x_imgs), (2, luts_2x_imgs)):
+        dst_lst.extend([
+            f'<image href="{lut_paths[f"vis_bx_{dpr}x"]}" x="{LUT_VIS_BX_POS[0]}" y="{LUT_VIS_BX_POS[1]}" width="{VIS_BOARD_SZ}" height="4" preserveAspectRatio="none"/>',
+            f'<image href="{lut_paths[f"vis_by_{dpr}x"]}" x="{LUT_VIS_BY_POS[0]}" y="{LUT_VIS_BY_POS[1]}" width="4" height="{VIS_BOARD_SZ}" preserveAspectRatio="none"/>',
+            f'<image href="{lut_paths[f"vis_mx_{dpr}x"]}" x="{LUT_VIS_MX_POS[0]}" y="{LUT_VIS_MX_POS[1]}" width="{VIS_MAT_W}" height="4" preserveAspectRatio="none"/>',
+            f'<image href="{lut_paths[f"vis_my_{dpr}x"]}" x="{LUT_VIS_MY_POS[0]}" y="{LUT_VIS_MY_POS[1]}" width="4" height="{VIS_MAT_H}" preserveAspectRatio="none"/>',
+            f'<image href="{lut_paths[f"vis_fy_{dpr}x"]}" x="{LUT_VIS_FY_POS[0]}" y="{LUT_VIS_FY_POS[1]}" width="4" height="{VIS_FEAT_H}" preserveAspectRatio="none"/>',
+            f'<image href="{lut_paths[f"bar_{dpr}x"]}" x="{LUT_BAR_POS[0]}" y="{LUT_BAR_POS[1]}" width="{VIS_WINBAR_W}" height="4" preserveAspectRatio="none"/>',
+        ])
+
+    ch_grids_html = "".join(
+        f'<div class=ai-bch>{"".join(f"<i class=ach{ch_i}_{a}></i>" for a in range(64))}</div>'
+        for ch_i in range(6)
+    )
+    m1u_cells = "".join(f"<i class=amu{v1}></i>" for v1 in range(64))
+    m1v_cells = "".join(f"<i class=amv{v1}></i>" for v1 in range(64))
+    m1k_cells = "".join(f"<i class=amk{v1}></i>" for v1 in range(64))
+
+    stage_chain = tuple(reversed(COMPUTE_STAGE_IDS))
+    open_gs = "".join(f'<g class=ai-{sid}>' for sid in stage_chain)
+    close_gs = "</g>" * len(stage_chain)
+
+    corr_r = metrics.get("test_pearson_r_svg", 0.9033)
+    n_params = metrics.get("total_parameters", 1345)
+
+    files_lbls = "".join(f"<span>{c}</span>" for c in "abcdefgh")
+    ranks_lbls = "".join(f"<span>{r}</span>" for r in range(8, 0, -1))
+
+    fo_inner_html = (
+        f'<foreignObject x="0" y="0" width="{FO_W}" height="{FO_H}">'
+        f'<div class=ai-src-wrap>'
+        f'<div class=ai-src-r1>'
+        f'{ch_grids_html}'
+        f'<div class="ai-meta ai-mt-turn"></div>'
+        f'<div class="ai-meta ai-mt-chk"></div>'
+        f'<div class="ai-meta ai-mt-term"></div>'
+        f'</div>'
+        f'<div class=ai-m1w>{m1u_cells}</div>'
+        f'<div class=ai-m1w>{m1v_cells}</div>'
+        f'<div class=ai-m1w>{m1k_cells}</div>'
+        f'<div class=ai-m1c-row>'
+        f'<div class=ai-m1c>{m1u_cells}</div>'
+        f'<div class=ai-m1c>{m1v_cells}</div>'
+        f'<div class=ai-m1c>{m1k_cells}</div>'
+        f'</div></div></foreignObject>'
+    )
+
+    svg_panel_html = (
+        '<section class="ai-col" aria-label="SVG 2-Ply CNN Minimax AI Engine">'
+        '<div class=ai-panel>'
+        '<div class=ai-head>'
+        '<span class=ai-title>HTML5 SVG 2-Ply CNN Minimax Engine</span>'
+        f'<span class=ai-sub>{n_params:,} params · Stockfish r={corr_r:.3f} · 1,024 depth-2 leaves</span>'
+        '</div>'
+        '<div class=ai-scroll>'
+        '<div class=ai-stage-shell>'
+        f'<svg class=ai-fstage width="{STAGE_W}" height="{STAGE_H}" viewBox="0 0 {STAGE_W} {STAGE_H}">'
+        f'{open_gs}'
+        f'<rect x="0" y="0" width="{STAGE_W}" height="{STAGE_H}" fill="#000" fill-opacity="0"/>'
+        f'<g class=ai-luts-1x><g transform="translate({FO_X},{FO_Y})">{fo_inner_html}</g>{"".join(luts_1x_imgs)}</g>'
+        f'<g class=ai-luts-2x><g transform="translate({FO_X},{FO_Y}) scale(0.5)">{fo_inner_html}</g>{"".join(luts_2x_imgs)}</g>'
+        f'{close_gs}</svg>'
+        '<div class=ai-hud aria-hidden="true">'
+        f'<span class=hud-ttl style="left:{VIS_BOARD_X}px;top:16px">1. AI Best-Move Map (8&times;8)</span>'
+        f'<span class=hud-sub style="left:{VIS_BOARD_X}px;top:33px">Violet = FROM &middot; Emerald = TO</span>'
+        f'<div class=bd-files>{files_lbls}</div>'
+        f'<div class=bd-ranks>{ranks_lbls}</div>'
+        '<div class=ai-shield>'
+        '<b>Your Turn to Move</b>'
+        '<span>Play any legal move on the chessboard &mdash; the SVG 2-Ply CNN reply will light up here automatically (or check <em>Peek AI Hint</em> above).</span>'
+        '</div>'
+        f'<span class=hud-ttl style="left:{VIS_MAT_X}px;top:16px">2. 2-Ply Minimax Value Sheet (64 &times; 16 = 1,024 Leaves)</span>'
+        f'<span class=hud-sub style="left:{VIS_MAT_X}px;top:33px">Cols = 64 Ply-1 targets &middot; Rows = 16 MVV-LVA replies</span>'
+        f'<span class=hud-sub style="left:{VIS_MAT_X}px;top:{VIS_QBAR_Y + VIS_QBAR_H + 5}px">Minimax Q(v&#x2081;) = min over opponent replies &middot; Gold bar = unique argmax move v&#x2081;*</span>'
+        f'<span class=hud-ttl style="left:{VIS_WINBAR_X}px;top:{VIS_WINBAR_Y - 22}px">3. AI Win Probability (WDL)</span>'
+        '<div class=wb-ticks><span>0%</span><span>25%</span><span>50%</span><span>75%</span><span>100%</span></div>'
+        '<div class=hm-legend>'
+        '<span><i class=lg-sw style="background:#a855f7"></i>AI FROM</span>'
+        '<span><i class=lg-sw style="background:#10b981"></i>AI TO / Winning</span>'
+        '<span><i class=lg-sw style="background:#293b59"></i>50% Draw</span>'
+        '<span><i class=lg-sw style="background:#e02e4d"></i>Losing</span>'
+        '<span><i class=lg-sw style="background:#fbbf24"></i>Mate / Argmax</span>'
+        '</div>'
+        '<div class=arch-card>'
+        '<h4>Zero-JS SVG Pipeline</h4>'
+        '<ul class=arch-list>'
+        '<li><code>.e12</code> CSS bus emits 64 legal Ply-1 moves into <code>&lt;foreignObject&gt;</code></li>'
+        '<li><code>s1a&ndash;s1i</code> FIDE pin/check rays select 16 quadrant replies/move</li>'
+        '<li><code>s2&ndash;s4</code> 3-layer 8-bit <code>feConvolveMatrix</code> CNN + linear skip</li>'
+        '<li><code>s5</code> <code>feMorphology</code> erode (MIN) &amp; dilate (MAX)</li>'
+        '</ul></div>'
+        f'<span class=hud-ttl style="left:{VIS_FEAT_X}px;top:{VIS_FEAT1_Y - 20}px">4. Live Skip-Material RGB Latent (ch 24&ndash;26, 64&times;16)</span>'
+        f'<span class=hud-ttl style="left:{VIS_FEAT_X}px;top:{VIS_FEAT2_Y - 20}px">5. Deep Tactical Conv3 RGB Latent (ch 21&ndash;23, 64&times;16)</span>'
+        '<div class=ai-2p-cover>'
+        '<b>2-Player Pass &amp; Play Active</b>'
+        '<span>SVG 2-Ply CNN Minimax filters are paused for zero GPU overhead. Switch to <strong>1P vs SVG AI</strong> or check <strong>Peek AI Hint</strong> above to run live neural search.</span>'
+        '</div>'
+        '</div></div></div></div></section>'
+    )
+
     tn_sentinels_html = "".join(
         f"<input type=radio name=t{k} id=t{k}n checked>" for k in range(max_plies)
     )
     arena_html = (
         f'<div class=ui-ctrl>{tn_sentinels_html}'
         '<div class=arena>'
+        '<div class=play-col>'
+        '<div class=status-card>'
+        '<div class=status-top>'
+        '<span class=status-kicker>Live CSS Cascade Referee</span>'
+        '<div class=status-main id=chess-status><i></i></div>'
+        '</div>'
+        '<div class=ai-turn-Callout>'
+        '<span>&#x26A1; <strong>SVG AI Turn:</strong> Execute the AI move shown on the 8&times;8 map &mdash; click <i class="sw-dot sw-from"></i> <strong>Violet (FROM)</strong> then <i class="sw-dot sw-to"></i> <strong>Emerald (TO)</strong>!</span>'
+        '</div>'
+        '<div class=stat-grid>'
+        '<div class=stat-box><div class=stat-lbl>Turn</div><div class="stat-val sv-turn" id=chess-turn><i></i></div></div>'
+        '<div class=stat-box><div class=stat-lbl>Plies</div><div class="stat-val sv-ply" id=chess-ply><i></i></div></div>'
+        '<div class=stat-box><div class=stat-lbl>Last Move</div><div class="stat-val sv-last" id=chess-last><i></i></div></div>'
+        '<div class=stat-box><div class=stat-lbl>50-Move</div><div class="stat-val sv-hmc" id=chess-hmc><i></i></div></div>'
+        '</div></div>'
         '<div class=board-shell>'
         '<div class=board-frame>'
         f'<div class=board-grid>{"".join(board_cells_html)}</div>'
@@ -525,21 +863,13 @@ header.hero code{color:#e2e8f0;background:#1e293b;padding:.1rem .32rem;border-ra
         '</div>'
         '<div class=term-banner><strong></strong><span>Use Undo Move or Reset Moves to continue playing</span></div>'
         '</div>'
-        '<aside class=hud-col aria-label="Game Status and Controls">'
-        '<div class=status-card>'
-        '<div class=status-kicker>Live CSS Cascade Referee</div>'
-        '<div class=status-main id=chess-status><i></i></div>'
-        '<div class=stat-grid>'
-        '<div class=stat-box><div class=stat-lbl>Side to Move</div><div class="stat-val sv-turn" id=chess-turn><i></i></div></div>'
-        '<div class=stat-box><div class=stat-lbl>Committed Plies</div><div class="stat-val sv-ply" id=chess-ply><i></i></div></div>'
-        '<div class=stat-box><div class=stat-lbl>Selected Piece</div><div class="stat-val sv-sel" id=chess-sel><i></i></div></div>'
-        '<div class=stat-box><div class=stat-lbl>Last Move</div><div class="stat-val sv-last" id=chess-last><i></i></div></div>'
-        '<div class=stat-box style="grid-column:span 2"><div class=stat-lbl>50-Move Halfmove Clock</div><div class="stat-val sv-hmc" id=chess-hmc><i></i></div></div>'
-        '</div></div>'
         '<div class=ctrl-card>'
         '<div class=btn-row>'
+        '<div class=btn-grp>'
         f'{"".join(undo_btns_html)}'
         '<button type=reset class="btn rst">&#x21BA; Reset Moves</button>'
+        '</div>'
+        '<span class=sel-pill>Selected: <i id=chess-sel></i></span>'
         '</div>'
         '<div class=promo-box>'
         '<div class=promo-head>'
@@ -547,16 +877,11 @@ header.hero code{color:#e2e8f0;background:#1e293b;padding:.1rem .32rem;border-ra
         '<span class=promo-cur><i></i></span>'
         '</div>'
         f'{"".join(promo_bars_html)}'
-        '</div>'
-        '<p class=rules-note>'
-        '<strong>100% Pure HTML + CSS:</strong> Click any friendly piece with legal moves to view exact '
-        'ray-cast &amp; pin-filtered targets (emerald dots = quiet moves, red rings = captures/en passant). '
-        'Switch pieces freely, click empty squares to deselect, or choose an underpromotion piece before '
-        'advancing a 7th-rank pawn.'
-        '</p></div></aside></div></div>'
+        '</div></div></div>'
+        f'{svg_panel_html}'
+        '</div></div>'
     )
 
-    # Open the nested `.init` -> 100 x (sibling inputs + `.p` > `.m0` > `.m1`) -> `.e0a .. .e11` pipeline!
     pipe_open: List[str] = ['<div class="st init">']
     open_divs = 1
     for k in range(max_plies):
@@ -584,44 +909,54 @@ header.hero code{color:#e2e8f0;background:#1e293b;padding:.1rem .32rem;border-ra
     return (
         "<!DOCTYPE html>\n<html lang=en>\n<head>\n<meta charset=utf-8>\n"
         "<meta name=viewport content='width=device-width,initial-scale=1'>\n"
-        "<title>NoJS Chess — Pure HTML + Inline CSS 2-Player FIDE Chess</title>\n"
-        f"<style>{''.join(css)}</style>\n</head>\n<body>\n<main class=chess-app>\n"
+        "<title>NoJS Chess — Pure HTML + CSS FIDE Chess &amp; SVG 2-Ply CNN Minimax AI</title>\n"
+        f"<style>{''.join(css)}</style>\n</head>\n<body>\n"
+        '<svg aria-hidden="true" width="0" height="0" style="position:absolute;width:0;height:0;overflow:hidden;pointer-events:none">'
+        f'<defs>{"".join(svg_defs)}</defs></svg>\n'
+        "<main class=chess-app>\n"
         "<header class=hero>"
         "<nav class=back-row aria-label='Site navigation'>"
         "<a class=back-link href='../'>&larr; All NoJS Demos</a>"
         "</nav>"
         "<div class=badge-row>"
         "<span class='badge green'>0 Bytes JavaScript</span>"
-        "<span class=badge>0 SVG / 0 Images</span>"
-        "<span class='badge purple'>Radix-3 Kogge-Stone Ray Legality</span>"
-        "<span class='badge amber'>Pins · Castling · En Passant · Mate &amp; Stalemate</span>"
+        "<span class='badge purple'>SVG 2-Ply CNN Minimax AI</span>"
+        "<span class=badge>Stockfish-Distilled Value Net (r=0.903)</span>"
+        "<span class='badge amber'>Full FIDE Rules · Pins · Castling · En Passant · Mate</span>"
         "</div>"
-        "<h1>Pure HTML + CSS 2-Player Chess</h1>"
-        "<p>Full FIDE legal-move generation, absolute pin &amp; double-check filtering, King X-ray safety, "
-        "castling, en passant (including horizontal discovered-check pins), pawn underpromotions, checkmate, "
-        "stalemate, insufficient material, and the 50-move rule computed strictly inside browser CSS style "
-        "recalculation via <code>@property &lt;integer&gt;</code> wires.</p></header>\n"
-        '<section class=panel aria-label="Position Presets and Board Orientation">'
+        "<h1>Pure HTML + CSS Chess with SVG 2-Ply CNN Minimax AI</h1>"
+        "<p>Full FIDE legal-move referee inside CSS <code>@property &lt;integer&gt;</code> style recalculation "
+        "paired with a 1-Player <strong>HTML5 SVG <code>&lt;filter&gt;</code> 2-Ply Minimax AI</strong> powered by "
+        "a Stockfish-distilled 3-layer 8-bit quantized CNN Value Network evaluating up to 1,024 depth-2 boards in parallel.</p></header>\n"
+        "<div class=top-bar-grid>"
+        '<section class=panel aria-label="Game Mode and AI Controls">'
         "<div class=panel-head>"
-        "<span class=panel-title>Position Presets &amp; Board View</span>"
-        "<label class=flip-pill for=flip-bd><input type=checkbox id=flip-bd><span>&#x21C5; Flip Board (Black View)</span></label>"
-        "</div>"
+        "<span class=panel-title>Game Mode (1P vs SVG AI / 2P)</span>"
+        "<div class=pill-row>"
+        "<label class=flip-pill for=ai-hint><input type=checkbox id=ai-hint><span>&#x1F441; Peek AI Hint</span></label>"
+        "<label class=flip-pill for=flip-bd><input type=checkbox id=flip-bd><span>&#x21C5; Flip Board</span></label>"
+        "</div></div>"
+        f"<div class=mode-grid>{''.join(mode_cards_html)}</div>"
+        "</section>"
+        '<section class=panel aria-label="Position Presets">'
+        "<div class=panel-head><span class=panel-title>Starting &amp; Tactical Presets</span></div>"
         f"<div class=preset-grid>{''.join(preset_cards_html)}</div>"
-        "</section>\n"
+        "</section></div>\n"
         f"<form id=mv>{''.join(pipe_open)}{arena_html}{pipe_close}</form>\n"
         "</main>\n</body>\n</html>\n"
     )
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Generate standalone pure HTML+CSS Chess index.html")
+    parser = argparse.ArgumentParser(description="Generate standalone pure HTML+CSS+SVG Chess index.html")
     parser.add_argument("--max-plies", type=int, default=DEFAULT_MAX_PLIES)
+    parser.add_argument("--weights", default=WEIGHTS_DEFAULT_PATH)
     parser.add_argument(
         "--out",
         default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html"),
     )
     args = parser.parse_args()
-    out_html = generate_html(max_plies=args.max_plies)
+    out_html = generate_html(max_plies=args.max_plies, weights_path=args.weights)
     with open(args.out, "w", encoding="utf-8") as f:
         f.write(out_html)
     print(f"Generated {args.out} ({len(out_html) / 1024:.1f} KB, max_plies={args.max_plies})")

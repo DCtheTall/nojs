@@ -414,7 +414,12 @@ class TestNoJSChess(unittest.TestCase):
                 exp_code = 0 if p is None else ((0 if p.color == PYCHESS.WHITE else 8) + p.piece_type)
                 self.assertEqual(env[f"--b{sq}"], exp_code, f"Game {game_idx} board mismatch at {cr.sq_name(sq)}")
 
-    def test_07_static_html5_and_zero_js_audit(self) -> None:
+    def test_07_static_html5_svg_and_zero_js_audit(self) -> None:
+        import xml.etree.ElementTree as ET
+        import numpy as np
+        from PIL import Image
+        import svg_ai
+
         html_path = os.path.join(CHESS_DIR, "index.html")
         self.assertTrue(os.path.isfile(html_path), "chess/index.html must exist")
         with open(html_path, "r", encoding="utf-8") as f:
@@ -424,7 +429,8 @@ class TestNoJSChess(unittest.TestCase):
         auditor.feed(raw)
         self.assertEqual(auditor.stack, [], f"Unclosed HTML tags: {auditor.stack}")
         self.assertNotIn("script", auditor.tags_seen, "Forbidden <script> tag in chess/index.html")
-        self.assertNotIn("svg", auditor.tags_seen, "Phase 1 chess/index.html should use 0 SVG")
+        self.assertNotIn("feimage", auditor.tags_seen, "Forbidden <feImage> tag in chess/index.html")
+        self.assertIn("svg", auditor.tags_seen, "Phase 2 chess/index.html must include SVG 2-ply CNN engine")
         self.assertEqual(auditor.event_attrs, [], f"Forbidden on* attributes: {auditor.event_attrs}")
         self.assertEqual(auditor.js_uris, [], f"Forbidden javascript: URIs: {auditor.js_uris}")
         self.assertTrue(auditor.has_back_link, "Missing GitHub Pages `../` back-link in chess/index.html")
@@ -443,6 +449,148 @@ class TestNoJSChess(unittest.TestCase):
             raw,
             "Subject-level :has(input:checked) fails to invalidate on radio uncheck in WebKit",
         )
+        self.assertIn(
+            ".ai-src-wrap i,.ai-meta{background:rgb(var(--g),var(--g),var(--g))}",
+            raw,
+            "<foreignObject> pixels must be strictly neutral gray (R==G==B) for Display-P3 immunity",
+        )
+
+        # Audit all compiled 1x & 2x SVG <filter> graphs and Display-P3/linearRGB lossless PNG LUTs
+        w_spec = svg_ai.load_weights()
+        for dpr in (1, 2):
+            flts = svg_ai.compile_chess_ai_filters(w_spec, dpr)
+            self.assertEqual(len(flts), len(svg_ai.COMPUTE_STAGE_IDS))
+            for sid, fxml in zip(svg_ai.COMPUTE_STAGE_IDS, flts):
+                root = ET.fromstring(fxml)
+                prims = list(root)
+                self.assertLessEqual(len(prims), 74, f"{sid} {dpr}x exceeds 74-primitive budget ({len(prims)})")
+                defined = {"SourceGraphic"}
+                for pr in prims:
+                    self.assertNotEqual(pr.tag, "feImage")
+                    if "x" in pr.attrib:
+                        px, py = float(pr.attrib["x"]), float(pr.attrib["y"])
+                        pw, ph = float(pr.attrib["width"]), float(pr.attrib["height"])
+                        self.assertGreaterEqual(px, 0.0)
+                        self.assertGreaterEqual(py, 0.0)
+                        self.assertLessEqual(px + pw, svg_ai.STAGE_W)
+                        self.assertLessEqual(py + ph, svg_ai.STAGE_H)
+                    if pr.tag == "feConvolveMatrix":
+                        ords = [int(x) for x in pr.attrib["order"].split()]
+                        self.assertTrue(all(o <= 5 for o in ords), f"Kernel > 5x5 in {sid}: {ords}")
+                    if pr.tag == "feComposite" and pr.attrib.get("operator") == "arithmetic":
+                        ks = [float(pr.attrib[f"k{j}"]) for j in (1, 2, 3, 4)]
+                        self.assertGreaterEqual(sum(ks), 0.999, f"Alpha drop in {sid}: {ks}")
+                    if pr.tag == "feMerge":
+                        for mn in pr:
+                            self.assertIn(mn.attrib["in"], defined)
+                    else:
+                        if "in" in pr.attrib:
+                            self.assertIn(pr.attrib["in"], defined)
+                        if "in2" in pr.attrib:
+                            self.assertIn(pr.attrib["in2"], defined)
+                    if "result" in pr.attrib:
+                        defined.add(pr.attrib["result"])
+
+        assets_dir = os.path.join(CHESS_DIR, "assets")
+        pngs = [fn for fn in os.listdir(assets_dir) if fn.endswith(".png")]
+        self.assertGreaterEqual(len(pngs), 30)
+        for fn in pngs:
+            arr = np.asarray(Image.open(os.path.join(assets_dir, fn)))
+            self.assertEqual(arr.shape[-1], 4)
+            self.assertTrue(np.all(arr[..., 0] == arr[..., 1]) and np.all(arr[..., 1] == arr[..., 2]))
+            self.assertTrue(np.all(arr[..., 3] == 255))
+            u8 = arr[..., 0]
+            self.assertTrue(np.all((u8 == 0) | (u8 >= 128)), f"Dark byte in {fn} risks linearRGB collision")
+
+
+class TestSVG2PlyCNN(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        import svg_ai
+        cls.svg_ai = svg_ai
+        cls.css_spec = build_chess_css_spec()
+        cls.fast = compile_fast_evaluator(cls.css_spec)
+        cls.w_spec = svg_ai.load_weights()
+
+    def test_01_golden_positions_bit_exact_from_css(self) -> None:
+        import numpy as np
+        gp = self.w_spec["golden_positions"]
+        self.assertGreaterEqual(len(gp), 24)
+        boards = []
+        for g in gp:
+            env = simulate_css_chess(self.css_spec, initial_fen=g["fen"], fast_stages=self.fast)
+            boards.append(self.svg_ai.extract_root_board_u8_from_css(env))
+        _, _, u8_pred = self.svg_ai.evaluate_svg_cnn_batch(np.stack(boards, axis=0), self.w_spec)
+        u8_exp = np.array([g["svg_u8"] for g in gp], dtype=np.int32)
+        self.assertTrue(np.array_equal(u8_pred, u8_exp), f"Golden u8 mismatch: {u8_pred} vs {u8_exp}")
+
+    @unittest.skipIf(PYCHESS is None, "python-chess not installed")
+    def test_02_e12_ply1_move_bus_parity_vs_python_chess(self) -> None:
+        for _pid, _title, fen, _sub in cr.PRESETS:
+            pb = PYCHESS.Board(fen)
+            env = simulate_css_chess(self.css_spec, initial_fen=fen, fast_stages=self.fast)
+            turn = int(env["--turn"])
+            legal_by_to: Dict[int, Set[int]] = {sq: set() for sq in range(64)}
+            for mv in pb.legal_moves:
+                if mv.promotion in (None, PYCHESS.QUEEN):
+                    legal_by_to[mv.to_square].add(mv.from_square)
+            for v_norm in range(64):
+                vr_n, vf_n = divmod(v_norm, 8)
+                v_real = (8 * vr_n + vf_n) if turn == 0 else (8 * (7 - vr_n) + vf_n)
+                c = env[f"--m1_c_{v_norm}"]
+                if not legal_by_to[v_real]:
+                    self.assertEqual(c, 0)
+                else:
+                    self.assertGreater(c, 0)
+                    self.assertEqual(env[f"--m1_v_{v_norm}"], v_norm)
+                    u_norm = env[f"--m1_u_{v_norm}"]
+                    ur_n, uf_n = divmod(u_norm, 8)
+                    u_real = (8 * ur_n + uf_n) if turn == 0 else (8 * (7 - ur_n) + uf_n)
+                    self.assertIn(u_real, legal_by_to[v_real])
+
+    def test_03_2ply_cnn_minimax_tactical_suite_and_self_play(self) -> None:
+        tactics = [
+            ("r1bqkbnr/ppp2ppp/2np4/4p3/4P1Q1/2N2N2/PPPP1PPP/R1B1KB1R b KQkq - 1 4", {"c8g4"}),
+            ("rnb1kbnr/pppp1ppp/8/4p3/4P2q/2N2N2/PPPP1PPP/R1BQKB1R b KQkq - 3 3", {"h4f6", "h4f4", "h4e7", "h4d8", "h4h5", "h4h6", "h4g4"}),
+            ("r1bqkbnr/pppp1ppp/2n5/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR b KQkq - 3 3", {"d7d5", "g7g6", "d8e7", "d8f6"}),
+            ("6k1/5ppp/8/8/8/8/5PPP/3R2K1 w - - 0 1", {"d1d8"}),
+            ("4k3/p7/8/3b4/8/8/8/4K2R b - - 0 1", {"d5h1"}),
+            ("7k/8/5K2/6Q1/8/8/8/8 w - - 0 1", {"g5g7"}),
+            ("4k3/8/8/8/8/8/4q3/4K3 w - - 0 1", {"e1e2"}),
+        ]
+        for fen, expected in tactics:
+            env = simulate_css_chess(self.css_spec, initial_fen=fen, fast_stages=self.fast)
+            res = self.svg_ai.simulate_svg_2ply_cnn(env, self.w_spec)
+            uci = cr.sq_name(res.best_u_real) + cr.sq_name(res.best_v_real)
+            self.assertIn(uci, expected, f"Tactic {fen}: got {uci}, expected {expected}")
+
+        # Verify 10-ply self-play produces strictly legal moves on every turn
+        plies: List[Tuple[int, int, int, int]] = []
+        for _step in range(10):
+            env = simulate_css_chess(self.css_spec, initial_fen=cr.START_FEN, ply_inputs=plies, fast_stages=self.fast)
+            if env["--is_terminal"]:
+                break
+            res = self.svg_ai.simulate_svg_2ply_cnn(env, self.w_spec)
+            self.assertLess(res.best_u_real, 64)
+            self.assertLess(res.best_v_real, 64)
+            plies.append((res.best_u_real, res.best_v_real, 1, cr.PT_QUEEN))
+        self.assertEqual(len(plies), 10)
+
+    def test_04_colab_notebook_syntax_audit(self) -> None:
+        import ast
+        import json
+        nb_path = os.path.join(CHESS_DIR, "train_chess_value_cnn.ipynb")
+        self.assertTrue(os.path.isfile(nb_path))
+        with open(nb_path, "r", encoding="utf-8") as f:
+            nb = json.load(f)
+        code_cells = [c for c in nb["cells"] if c.get("cell_type") == "code"]
+        self.assertGreaterEqual(len(code_cells), 6)
+        for idx, cell in enumerate(code_cells):
+            src = "\n".join(
+                line for line in "".join(cell["source"]).splitlines()
+                if not line.lstrip().startswith(("!", "%"))
+            )
+            ast.parse(src, filename=f"cell_{idx}")
 
 
 if __name__ == "__main__":
