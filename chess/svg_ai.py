@@ -22,6 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import os
+import re
 from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
@@ -468,7 +469,26 @@ def svg_fe_convolve_batch(
     return res
 
 
-def svg_pointwise_batch(ch_bufs: np.ndarray, pw_spec: dict) -> np.ndarray:
+# Display-P3-lossless inter-stage CNN activation range `[128/255 .. 255/255]` (`z = P3_HI_BIAS + P3_HI_SCALE * x`):
+# On wide-gamut (Display-P3) macOS/iOS displays, WebKit converts intermediate `<g filter="url(#...)">` sRGB buffers
+# through Display-P3 and back, crushing dark `[0..127]` channel bytes (`0..7 -> 0`, `8..17 -> 13`), whereas every
+# `(R, G, B)` byte in `[128..255]^3` survives arbitrary filter hops with 0-LSB error!
+P3_HI_BIAS = 128.0 / 255.0
+P3_HI_SCALE = 127.0 / 255.0
+P3_HI_INV_SCALE = 255.0 / 127.0
+P3_HI_DEC_OFFSET = 128.0 / 127.0
+
+
+def _decode_p3_hi_mat20(mat20: Sequence[float]) -> List[float]:
+    """Compensate a `4x5` `<feColorMatrix>` whose RGB input was encoded as `z = 128/255 + (127/255)*x`."""
+    m = np.asarray(mat20, dtype=np.float64).reshape(4, 5).copy()
+    for r in range(3):
+        m[r, :3] *= P3_HI_INV_SCALE
+        m[r, 4] -= float(m[r, :3].sum()) * P3_HI_BIAS
+    return [float(v) for v in m.reshape(-1)]
+
+
+def svg_pointwise_batch(ch_bufs: np.ndarray, pw_spec: dict, decode_p3_hi: bool = False) -> np.ndarray:
     bsz, _, h, w = ch_bufs.shape
     z0 = float(pw_spec["zero_point"])
     out = np.zeros((bsz, pw_spec["out_channels"], h, w), dtype=np.float64)
@@ -476,7 +496,8 @@ def svg_pointwise_batch(ch_bufs: np.ndarray, pw_spec: dict) -> np.ndarray:
         o = trip["out_triplet"]
         acc = None
         for g, mat20 in enumerate(trip["color_matrices"]):
-            m = np.asarray(mat20, dtype=np.float64).reshape(4, 5)[:3, :]
+            cm = _decode_p3_hi_mat20(mat20) if decode_p3_hi else mat20
+            m = np.asarray(cm, dtype=np.float64).reshape(4, 5)[:3, :]
             rgb_in = ch_bufs[:, 3 * g : 3 * (g + 1)]
             part = q8(np.einsum("rc,bchw->brhw", m[:, :3], rgb_in) + m[:, 4].reshape(1, 3, 1, 1))
             acc = part if acc is None else q8(acc + part - z0)
@@ -487,8 +508,11 @@ def svg_pointwise_batch(ch_bufs: np.ndarray, pw_spec: dict) -> np.ndarray:
 
 
 def evaluate_svg_cnn_batch(boards_u8_n688: np.ndarray, spec: dict) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Bit-exact 8-bit SVG `<filter>` CNN Value Network evaluation on `(N, 6, 8, 8)` uint8 boards."""
+    """Bit-exact 8-bit SVG `<filter>` CNN Value Network evaluation on `(N, 6, 8, 8)` uint8 boards
+    with Display-P3-lossless `[128..255]` inter-filter activation encoding.
+    """
     ly = spec["layers"]
+    enc_hi = lambda arr: q8(arr * P3_HI_SCALE + P3_HI_BIAS)
     x0 = q8(np.asarray(boards_u8_n688, dtype=np.float64) / 255.0)
 
     sk_spec = ly["skip_mat"]
@@ -498,53 +522,75 @@ def evaluate_svg_cnn_batch(boards_u8_n688: np.ndarray, spec: dict) -> Tuple[np.n
     p0 = q8(np.einsum("rc,bchw->brhw", m0[:, :3], x0[:, 0:3]) + m0[:, 4].reshape(1, 3, 1, 1))
     p1 = q8(np.einsum("rc,bchw->brhw", m1[:, :3], x0[:, 3:6]) + m1[:, 4].reshape(1, 3, 1, 1))
     sk = q8(p0 + p1 - z0)
-    for stg in sk_spec["sum_stages"]:
-        stride = 2 if sk.shape[-1] > 2 else 1
-        sk = np.stack(
-            [svg_fe_convolve_batch(sk[:, c], stg["order"], 0, 0, stg["kernelMatrix"], stg["divisor"], stg["bias"], stride=stride)
-             for c in range(3)],
-            axis=1,
-        )
+    st0, st1, st2 = sk_spec["sum_stages"]
+    sk = np.stack(
+        [svg_fe_convolve_batch(sk[:, c], st0["order"], 0, 0, st0["kernelMatrix"], st0["divisor"], st0["bias"], stride=2)
+         for c in range(3)],
+        axis=1,
+    )
+    sk = np.stack(
+        [svg_fe_convolve_batch(sk[:, c], st1["order"], 0, 0, st1["kernelMatrix"], st1["divisor"], st1["bias"], stride=2)
+         for c in range(3)],
+        axis=1,
+    )
+    sk_c2_hi = enc_hi(sk)
+    km2_hi = [float(k) * P3_HI_INV_SCALE for k in st2["kernelMatrix"]]
+    bi2_hi = float(st2["bias"]) - P3_HI_DEC_OFFSET * (float(sum(st2["kernelMatrix"])) / float(st2["divisor"]))
+    sk_c1 = np.stack(
+        [svg_fe_convolve_batch(sk_c2_hi[:, c], st2["order"], 0, 0, km2_hi, st2["divisor"], bi2_hi, stride=1)
+         for c in range(3)],
+        axis=1,
+    )
+    sk_c1_hi = enc_hi(sk_c1)
 
-    h = svg_pointwise_batch(x0, ly["mix1"])
+    h = svg_pointwise_batch(x0, ly["mix1"], decode_p3_hi=False)
+    h = np.pad(h, ((0, 0), (0, 0), (0, 2), (0, 2)), mode="constant", constant_values=0.0)
     h = np.stack(
         [svg_fe_convolve_batch(h[:, f["channel"]], f["order"], f["targetX"], f["targetY"], f["kernelMatrix"], f["divisor"], f["bias"])
          for f in ly["dwconv1"]["filters"]],
         axis=1,
     )
     p1_s = ly["pool1"]
+    p1_div_hi = float(p1_s["divisor"]) / P3_HI_SCALE
     h = np.stack(
-        [svg_fe_convolve_batch(h[:, c], p1_s["order"], 0, 0, p1_s["kernelMatrix"], p1_s["divisor"], 0.0, stride=2)
+        [svg_fe_convolve_batch(h[:, c], p1_s["order"], 0, 0, p1_s["kernelMatrix"], p1_div_hi, P3_HI_BIAS, stride=2)
          for c in range(h.shape[1])],
         axis=1,
     )
+    idx6 = [0, 1, 2, 3, 4, 4]
+    h = h[:, :, idx6, :][:, :, :, idx6]
 
-    h = svg_pointwise_batch(h, ly["mix2"])
+    h = svg_pointwise_batch(h, ly["mix2"], decode_p3_hi=True)
+    bm6 = np.zeros((1, 1, 6, 6), dtype=np.float64)
+    bm6[:, :, :4, :4] = 1.0
+    h = h * bm6
     h = np.stack(
         [svg_fe_convolve_batch(h[:, f["channel"]], f["order"], f["targetX"], f["targetY"], f["kernelMatrix"], f["divisor"], f["bias"])
          for f in ly["dwconv2"]["filters"]],
         axis=1,
     )
     p2_s = ly["pool2"]
+    p2_div_hi = float(p2_s["divisor"]) / P3_HI_SCALE
     h = np.stack(
-        [svg_fe_convolve_batch(h[:, c], p2_s["order"], 0, 0, p2_s["kernelMatrix"], p2_s["divisor"], 0.0, stride=2)
+        [svg_fe_convolve_batch(h[:, c], p2_s["order"], 0, 0, p2_s["kernelMatrix"], p2_div_hi, P3_HI_BIAS, stride=2)
          for c in range(h.shape[1])],
         axis=1,
-    )
+    )[:, :, :2, :2]
 
-    h = svg_pointwise_batch(h, ly["mix3"])
-    h = np.stack(
-        [svg_fe_convolve_batch(h[:, f["channel"]], f["order"], f["targetX"], f["targetY"], f["kernelMatrix"], f["divisor"], f["bias"])
-         for f in ly["dwconv3"]["filters"]],
-        axis=1,
-    )
+    h = enc_hi(svg_pointwise_batch(h, ly["mix3"], decode_p3_hi=True))
+    h_d3 = []
+    for f in ly["dwconv3"]["filters"]:
+        km3 = [float(k) * P3_HI_INV_SCALE for k in f["kernelMatrix"]]
+        bi3 = float(f["bias"]) - P3_HI_DEC_OFFSET * (float(sum(f["kernelMatrix"])) / float(f["divisor"]))
+        h_d3.append(svg_fe_convolve_batch(h[:, f["channel"]], f["order"], f["targetX"], f["targetY"], km3, f["divisor"], bi3))
+    h = enc_hi(np.stack(h_d3, axis=1))
 
-    feat = np.concatenate([h[:, :, 0, 0], sk[:, :, 0, 0]], axis=1)  # (N, 27)
+    feat = np.concatenate([h[:, :, 0, 0], sk_c1_hi[:, :, 0, 0]], axis=1)
     vh = ly["value_head"]
     z0_vh = float(vh["zero_point"])
     acc = None
     for g, mat20 in enumerate(vh["color_matrices"]):
-        m = np.asarray(mat20, dtype=np.float64).reshape(4, 5)[0, :]
+        m = np.asarray(_decode_p3_hi_mat20(mat20), dtype=np.float64).reshape(4, 5)[0, :]
         part = q8(feat[:, 3 * g : 3 * (g + 1)] @ m[:3] + m[4])
         acc = part if acc is None else q8(acc + part - z0_vh)
 
@@ -1252,12 +1298,124 @@ def simulate_svg_2ply_cnn(css_env: Dict[str, int], spec: dict) -> SVG2PlyResult:
 # 3. Multi-Stage Linear-VRAM SVG `<filter>` Compiler (`<= 72` prims/stage)
 # ---------------------------------------------------------------------------
 
+_PRIM_RE = re.compile(r'<(fe[A-Za-z]+)\b([^>]*?)(/?)>')
+_ATTR_RE = re.compile(r'([A-Za-z][\w:-]*)="([^"]*)"')
+
+
+def _fmt_num(v: float) -> str:
+    return str(int(v)) if float(v).is_integer() else f"{v:.9g}"
+
+
+def _webkit_safe_displacement(body: Sequence[str]) -> List[str]:
+    """Make every `<feDisplacementMap>` sample only inside its own primitive subregion.
+
+    WebKit/Safari fetches the `in` image of `<feDisplacementMap>` clipped to the displacement
+    primitive's *own* subregion (`effectDrawingRect`), so any pixel displaced from outside that
+    rectangle reads transparent black. Chrome/Skia (and the W3C spec) sample the full input
+    subregion. Most gathers here read from a pre-shifted (`dx`/`dy` = `a_s`) source that extends
+    past the output rectangle, which silently zeroed whole 2-ply leaf columns/rows in Safari.
+
+    Fix: grow the displacement subregion to the union of its own rectangle and its `in`
+    rectangle (identical math in every engine), then crop back to the original rectangle with a
+    zero-offset `<feOffset>` that takes over the original `result` name.
+    """
+    src = "".join(body)
+    regions: Dict[str, Tuple[float, float, float, float]] = {}
+    out: List[str] = []
+    pos = 0
+    for m in _PRIM_RE.finditer(src):
+        tag, attr_s = m.group(1), m.group(2)
+        attrs = dict(_ATTR_RE.findall(attr_s))
+        has_box = all(k in attrs for k in ("x", "y", "width", "height"))
+        if tag == "feDisplacementMap" and has_box and attrs.get("in") in regions and "result" in attrs:
+            x, y, w, h = (float(attrs[k]) for k in ("x", "y", "width", "height"))
+            ix, iy, iw, ih = regions[attrs["in"]]
+            ux0, uy0 = min(x, ix), min(y, iy)
+            ux1, uy1 = max(x + w, ix + iw), max(y + h, iy + ih)
+            if (ux0, uy0, ux1, uy1) != (x, y, x + w, y + h):
+                res = attrs["result"]
+                wide = res + "_wk"
+                new_attrs = dict(attrs)
+                new_attrs.update(x=_fmt_num(ux0), y=_fmt_num(uy0), width=_fmt_num(ux1 - ux0),
+                                 height=_fmt_num(uy1 - uy0), result=wide)
+                out.append(src[pos:m.start()])
+                out.append("<feDisplacementMap " + " ".join(f'{k}="{v}"' for k, v in new_attrs.items()) + "/>")
+                out.append(
+                    f'<feOffset in="{wide}" dx="0" dy="0" x="{attrs["x"]}" y="{attrs["y"]}" '
+                    f'width="{attrs["width"]}" height="{attrs["height"]}" result="{res}"/>'
+                )
+                pos = m.end()
+                regions[res] = (x, y, w, h)
+                continue
+        if has_box and "result" in attrs:
+            regions[attrs["result"]] = (float(attrs["x"]), float(attrs["y"]), float(attrs["width"]), float(attrs["height"]))
+    out.append(src[pos:])
+    return out
+
+
 def _wrap_filter_raw(fid: str, body: Sequence[str], w: int = STAGE_W, h: int = STAGE_H) -> str:
     return (
         f'<filter id="{fid}" filterUnits="userSpaceOnUse" primitiveUnits="userSpaceOnUse" '
         f'x="0" y="0" width="{w}" height="{h}" color-interpolation-filters="sRGB">'
         f'{"".join(body)}</filter>'
     )
+
+
+# Half an 8-bit LSB: `trunc(x + 0.5) == round(x)` for every `x >= 0`.
+WEBKIT_HALF_LSB = 0.5 / 255.0
+WEBKIT_FILTER_SUFFIX = "-wk"
+_WK_COMPOSITE_RE = re.compile(r'<feComposite\b[^>]*operator="arithmetic"[^>]*>')
+_WK_CONVOLVE_RE = re.compile(r'<feConvolveMatrix\b[^>]*>')
+_WK_LINEAR_RE = re.compile(r'<feFunc[RGBA]\b[^>]*type="linear"[^>]*>')
+_WK_ID_RE = re.compile(r'<filter id="([^"]+)"')
+
+
+def _add_attr(tag: str, name: str, delta: float, default: float = 0.0) -> str:
+    m = re.search(r'\b%s="([^"]*)"' % name, tag)
+    old = float(m.group(1)) if m else default
+    new = f'{name}="{old + delta:.9g}"'
+    if m:
+        return tag[:m.start()] + new + tag[m.end():]
+    end = len(tag) - (2 if tag.endswith("/>") else 1)
+    return f"{tag[:end].rstrip()} {new}{tag[end:]}"
+
+
+_WK_TABLE256_RE = re.compile(r'type="table" tableValues="([^"]*)"')
+
+
+def _wk_table_to_discrete(m: "re.Match[str]") -> str:
+    vals = m.group(1)
+    # A 256-entry `table` sampled at byte inputs `i/255` is exactly `discrete` (`floor(i*256/255) == i`).
+    return f'type="discrete" tableValues="{vals}"' if len(vals.split()) == 256 else m.group(0)
+
+
+def webkit_filter_variant(filter_xml: str) -> str:
+    """Safari/WebKit twin of one compiled stage `<filter>` (`id` gets the `-wk` suffix).
+
+    The Chrome filters are left byte-for-byte untouched; Safari binds these twins through a
+    WebKit-only `@supports` block (see `generate.py`). Three WebKit-specific behaviours, each
+    reproduced in `WKWebView`, made the AI blunder in Safari (e.g. `Qd1-h5??` at ply 8):
+
+    1. **Truncation.** WebKit's `<feComposite operator="arithmetic">`, `<feConvolveMatrix>` and linear
+       `<feFuncX>` appliers truncate (`static_cast<uint8_t>(float)`) where Chrome rounds, shifting CNN
+       activations ~0.5 LSB per primitive and breaking exact constants (`128/255 + 0.498039*255/255`
+       -> `254`). Adding half an LSB to `k4` / `bias` / `intercept` turns truncation into rounding.
+    2. **`type="table"` interpolation.** WebKit evaluates 256-entry `table` transfer functions with a
+       lossy float path (`1.0 -> 254/255` for many indices), which broke every exact equality LUT.
+       At byte inputs a 256-entry `table` is identical to `discrete`, which WebKit evaluates exactly.
+    3. **Displacement clipping.** WebKit reads `<feDisplacementMap in>` clipped to the displacement's
+       own subregion, zeroing gathers whose source lies outside it (whole 2-ply leaf rows/columns).
+       See `_webkit_safe_displacement`.
+    """
+    out = _WK_ID_RE.sub(lambda m: f'<filter id="{m.group(1)}{WEBKIT_FILTER_SUFFIX}"', filter_xml, count=1)
+    head_end = out.index(">") + 1
+    body = "".join(_webkit_safe_displacement([out[head_end:-len("</filter>")]]))
+    out = out[:head_end] + body + "</filter>"
+    out = _WK_TABLE256_RE.sub(_wk_table_to_discrete, out)
+    out = _WK_COMPOSITE_RE.sub(lambda m: _add_attr(m.group(0), "k4", WEBKIT_HALF_LSB), out)
+    out = _WK_CONVOLVE_RE.sub(lambda m: _add_attr(m.group(0), "bias", WEBKIT_HALF_LSB), out)
+    out = _WK_LINEAR_RE.sub(lambda m: _add_attr(m.group(0), "intercept", WEBKIT_HALF_LSB), out)
+    return out
 
 
 def _pack_rgb(p: List[str], r_in: str, g_in: str, b_in: str, x: int, y: int, w: int, h: int, out: str) -> None:
@@ -3113,6 +3271,17 @@ def compile_chess_ai_filters(spec: dict, dpr: int) -> List[str]:
     sk_cm0, sk_cm1 = sk_spec["color_matrices"]
     sk_st0, sk_st1, sk_st2 = sk_spec["sum_stages"]
     nz0_sk = _fmt_num(-float(sk_spec["zero_point"]))
+    p3_sl_s = _fmt_num(P3_HI_SCALE)
+    p3_bi_s = _fmt_num(P3_HI_BIAS)
+
+    def _emit_p3_hi_encode(p: List[str], in_nm: str, w_s: int | float, h_s: int | float, out_nm: str) -> None:
+        p.append(
+            f'<feComponentTransfer in="{in_nm}" x="0" y="0" width="{w_s}" height="{h_s}" result="{out_nm}">'
+            f'<feFuncR type="linear" slope="{p3_sl_s}" intercept="{p3_bi_s}"/>'
+            f'<feFuncG type="linear" slope="{p3_sl_s}" intercept="{p3_bi_s}"/>'
+            f'<feFuncB type="linear" slope="{p3_sl_s}" intercept="{p3_bi_s}"/>'
+            f'<feFuncA type="discrete" tableValues="1"/></feComponentTransfer>'
+        )
 
     def _emit_skip_c2(p: List[str]) -> None:
         p.extend([
@@ -3120,7 +3289,10 @@ def compile_chess_ai_filters(spec: dict, dpr: int) -> List[str]:
             f'<feColorMatrix in="in_b1" x="0" y="0" width="{s2_w}" height="{s2_h}" type="matrix" values="{_fmt_list(sk_cm1)}" result="sk1"/>',
             f'<feComposite in="sk0" in2="sk1" x="0" y="0" width="{s2_w}" height="{s2_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="{nz0_sk}" result="sk_8"/>',
             f'<feConvolveMatrix in="sk_8" x="0" y="0" width="{s2_w}" height="{s2_h}" order="2 2" targetX="0" targetY="0" divisor="{_fmt_num(sk_st0["divisor"])}" bias="{_fmt_num(sk_st0["bias"])}" kernelMatrix="1 1 1 1" edgeMode="none" preserveAlpha="true" result="sk_4"/>',
-            f'<feConvolveMatrix in="sk_4" x="0" y="0" width="{s2_w}" height="{s2_h}" order="3 3" targetX="0" targetY="0" divisor="{_fmt_num(sk_st1["divisor"])}" bias="{_fmt_num(sk_st1["bias"])}" kernelMatrix="1 0 1 0 0 0 1 0 1" edgeMode="none" preserveAlpha="true" result="sk_2"/>',
+            f'<feConvolveMatrix in="sk_4" x="0" y="0" width="{s2_w}" height="{s2_h}" order="3 3" targetX="0" targetY="0" divisor="{_fmt_num(sk_st1["divisor"])}" bias="{_fmt_num(sk_st1["bias"])}" kernelMatrix="1 0 1 0 0 0 1 0 1" edgeMode="none" preserveAlpha="true" result="sk_2_raw"/>',
+        ])
+        _emit_p3_hi_encode(p, "sk_2_raw", s2_w, s2_h, "sk_2")
+        p.extend([
             f'<feOffset in="SourceGraphic" dx="{-c10x_x}" dy="{-c10x_y}" x="0" y="0" width="{sc(28)}" height="{sc(4)}" result="c10x0"/>',
             f'<feTile in="c10x0" x="0" y="0" width="{c2_w}" height="{s2_h}" result="c10x_t"/>',
             f'<feOffset in="SourceGraphic" dx="{-c10y_x}" dy="{-c10y_y}" x="0" y="0" width="{sc(4)}" height="{sc(16)}" result="c10y0"/>',
@@ -3153,7 +3325,7 @@ def compile_chess_ai_filters(spec: dict, dpr: int) -> List[str]:
         (sc(440), sc(264), sc(200), sc(120)),
     ]
     flts1 = ly["dwconv1"]["filters"]
-    p1_div = _fmt_num(ly["pool1"]["divisor"])
+    p1_div_hi = _fmt_num(float(ly["pool1"]["divisor"]) / P3_HI_SCALE)
     nz0_m1 = _fmt_num(-float(ly["mix1"]["zero_point"]))
 
     def _emit_l1_shared(p: List[str]) -> None:
@@ -3194,7 +3366,7 @@ def compile_chess_ai_filters(spec: dict, dpr: int) -> List[str]:
         _pack_rgb(p, f"d1_{o}r", f"d1_{o}g", f"d1_{o}b", 0, 0, s2_w, s2_h, f"d1g_{o}")
         p.append(
             f'<feConvolveMatrix in="d1g_{o}" x="0" y="0" width="{s2_w}" height="{s2_h}" '
-            f'order="2 2" targetX="0" targetY="0" divisor="{p1_div}" bias="0" '
+            f'order="2 2" targetX="0" targetY="0" divisor="{p1_div_hi}" bias="{p3_bi_s}" '
             f'kernelMatrix="1 1 1 1" edgeMode="none" preserveAlpha="true" result="p1_{o}"/>'
         )
         dx_o = sc(dst_xy[0]) if dst_xy is not None else 0
@@ -3254,7 +3426,7 @@ def compile_chess_ai_filters(spec: dict, dpr: int) -> List[str]:
     ]
     m2_trips = ly["mix2"]["triplets"]
     flts2 = ly["dwconv2"]["filters"]
-    p2_div = _fmt_num(ly["pool2"]["divisor"])
+    p2_div_hi = _fmt_num(float(ly["pool2"]["divisor"]) / P3_HI_SCALE)
     nz0_m2 = _fmt_num(-float(ly["mix2"]["zero_point"]))
     g2_cnt = len(m2_trips)
     s3_step = 2 if g1_cnt <= 5 else 1
@@ -3288,7 +3460,8 @@ def compile_chess_ai_filters(spec: dict, dpr: int) -> List[str]:
             trip = m2_trips[o]
             acc = ""
             for g, mat20 in enumerate(trip["color_matrices"]):
-                p3.append(f'<feColorMatrix in="p1_in{g}" x="0" y="0" width="{c6_w}" height="{c6_h}" type="matrix" values="{_fmt_list(mat20)}" result="m2p_{o}_{g}"/>')
+                cm_dec = _decode_p3_hi_mat20(mat20)
+                p3.append(f'<feColorMatrix in="p1_in{g}" x="0" y="0" width="{c6_w}" height="{c6_h}" type="matrix" values="{_fmt_list(cm_dec)}" result="m2p_{o}_{g}"/>')
                 if g == 0:
                     acc = f"m2p_{o}_{g}"
                 else:
@@ -3315,7 +3488,7 @@ def compile_chess_ai_filters(spec: dict, dpr: int) -> List[str]:
             _pack_rgb(p3, f"d2_{o}r", f"d2_{o}g", f"d2_{o}b", 0, 0, c6_w, c6_h, f"d2g_{o}")
             p3.append(
                 f'<feConvolveMatrix in="d2g_{o}" x="0" y="0" width="{c6_w}" height="{c6_h}" '
-                f'order="2 2" targetX="0" targetY="0" divisor="{p2_div}" bias="0" '
+                f'order="2 2" targetX="0" targetY="0" divisor="{p2_div_hi}" bias="{p3_bi_s}" '
                 f'kernelMatrix="1 1 1 1" edgeMode="none" preserveAlpha="true" result="p2_{o}"/>'
             )
             dx_o, dy_o = sc(VRAM_P2_C2[o][0]), sc(VRAM_P2_C2[o][1])
@@ -3347,7 +3520,8 @@ def compile_chess_ai_filters(spec: dict, dpr: int) -> List[str]:
             trip = m3_trips[o]
             acc = ""
             for g, mat20 in enumerate(trip["color_matrices"]):
-                p4ab.append(f'<feColorMatrix in="p2_in{g}" x="0" y="0" width="{c2_w}" height="{c2_h}" type="matrix" values="{_fmt_list(mat20)}" result="m3p_{o}_{g}"/>')
+                cm_dec = _decode_p3_hi_mat20(mat20)
+                p4ab.append(f'<feColorMatrix in="p2_in{g}" x="0" y="0" width="{c2_w}" height="{c2_h}" type="matrix" values="{_fmt_list(cm_dec)}" result="m3p_{o}_{g}"/>')
                 if g == 0:
                     acc = f"m3p_{o}_{g}"
                 else:
@@ -3356,16 +3530,17 @@ def compile_chess_ai_filters(spec: dict, dpr: int) -> List[str]:
                     acc = nxt
             sl, ic = trip["rescale_slopes"], trip["rescale_intercepts"]
             dx_o, dy_o = sc(VRAM_MIX3[o][0]), sc(VRAM_MIX3[o][1])
-            raw_nm = f"m3g_{o}" if (dx_o == 0 and dy_o == 0) else f"m3r_{o}"
+            enc_nm = f"m3g_{o}" if (dx_o == 0 and dy_o == 0) else f"m3h_{o}"
             p4ab.append(
-                f'<feComponentTransfer in="{acc}" x="0" y="0" width="{c2_w}" height="{c2_h}" result="{raw_nm}">'
+                f'<feComponentTransfer in="{acc}" x="0" y="0" width="{c2_w}" height="{c2_h}" result="m3r_{o}">'
                 f'<feFuncR type="linear" slope="{_fmt_num(sl[0])}" intercept="{_fmt_num(ic[0])}"/>'
                 f'<feFuncG type="linear" slope="{_fmt_num(sl[1])}" intercept="{_fmt_num(ic[1])}"/>'
                 f'<feFuncB type="linear" slope="{_fmt_num(sl[2])}" intercept="{_fmt_num(ic[2])}"/>'
                 f'<feFuncA type="discrete" tableValues="1"/></feComponentTransfer>'
             )
+            _emit_p3_hi_encode(p4ab, f"m3r_{o}", c2_w, c2_h, enc_nm)
             if dx_o != 0 or dy_o != 0:
-                p4ab.append(f'<feOffset in="{raw_nm}" dx="{dx_o}" dy="{dy_o}" x="{dx_o}" y="{dy_o}" width="{c2_w}" height="{c2_h}" result="m3g_{o}"/>')
+                p4ab.append(f'<feOffset in="{enc_nm}" dx="{dx_o}" dy="{dy_o}" x="{dx_o}" y="{dy_o}" width="{c2_w}" height="{c2_h}" result="m3g_{o}"/>')
             s4_outs.append(f"m3g_{o}")
         _emit_passthrough(p4ab, s4_outs)
         out_filters.append(_wrap_filter(f"ai-s4m{m_idx}-{dpr}x", p4ab))
@@ -3393,12 +3568,15 @@ def compile_chess_ai_filters(spec: dict, dpr: int) -> List[str]:
             p4cd.append(f'<feOffset in="SourceGraphic" dx="{-mx}" dy="{-my}" x="0" y="0" width="{c2_w}" height="{c2_h}" result="m3i_{g}"/>')
             for c_off, csfx in enumerate(("r", "g", "b")):
                 f = flts3[3 * g + c_off]
+                km3_hi = [float(k) * P3_HI_INV_SCALE for k in f["kernelMatrix"]]
+                bi3_hi = float(f["bias"]) - P3_HI_DEC_OFFSET * (float(sum(f["kernelMatrix"])) / float(f["divisor"]))
                 p4cd.append(
                     f'<feConvolveMatrix in="m3i_{g}" x="0" y="0" width="{c2_w}" height="{c2_h}" '
-                    f'order="2 2" targetX="0" targetY="0" divisor="1" bias="{_fmt_num(f["bias"])}" '
-                    f'kernelMatrix="{_fmt_list(f["kernelMatrix"])}" edgeMode="none" preserveAlpha="true" result="d3_{g}{csfx}"/>'
+                    f'order="2 2" targetX="0" targetY="0" divisor="1" bias="{_fmt_num(bi3_hi)}" '
+                    f'kernelMatrix="{_fmt_list(km3_hi)}" edgeMode="none" preserveAlpha="true" result="d3_{g}{csfx}"/>'
                 )
-            _pack_rgb(p4cd, f"d3_{g}r", f"d3_{g}g", f"d3_{g}b", 0, 0, c2_w, c2_h, f"d3g_{g}")
+            _pack_rgb(p4cd, f"d3_{g}r", f"d3_{g}g", f"d3_{g}b", 0, 0, c2_w, c2_h, f"d3g_raw_{g}")
+            _emit_p3_hi_encode(p4cd, f"d3g_raw_{g}", c2_w, c2_h, f"d3g_{g}")
             dx_g, dy_g = sc(VRAM_DW3_C1[g][0]), sc(VRAM_DW3_C1[g][1])
             out_nm = f"dw3c1_{g}"
             _emit_compact_at_origin(
@@ -3415,12 +3593,15 @@ def compile_chess_ai_filters(spec: dict, dpr: int) -> List[str]:
             )
             s4_outs.append("nom2_c1")
         elif d_idx == 1:
+            sk2_km_hi = " ".join(_fmt_num(float(k) * P3_HI_INV_SCALE) for k in sk_st2["kernelMatrix"])
+            sk2_bi_hi = float(sk_st2["bias"]) - P3_HI_DEC_OFFSET * (float(sum(sk_st2["kernelMatrix"])) / float(sk_st2["divisor"]))
             p4cd.extend([
                 f'<feOffset in="SourceGraphic" dx="{-skc2_x}" dy="{-skc2_y}" x="0" y="0" width="{c2_w}" height="{c2_h}" result="sk_in2"/>',
                 f'<feConvolveMatrix in="sk_in2" x="0" y="0" width="{c2_w}" height="{c2_h}" '
-                f'order="2 2" targetX="0" targetY="0" divisor="{_fmt_num(sk_st2["divisor"])}" bias="{_fmt_num(sk_st2["bias"])}" '
-                f'kernelMatrix="1 1 1 1" edgeMode="none" preserveAlpha="true" result="sk_1"/>',
+                f'order="2 2" targetX="0" targetY="0" divisor="{_fmt_num(sk_st2["divisor"])}" bias="{_fmt_num(sk2_bi_hi)}" '
+                f'kernelMatrix="{sk2_km_hi}" edgeMode="none" preserveAlpha="true" result="sk_1_raw"/>',
             ])
+            _emit_p3_hi_encode(p4cd, "sk_1_raw", c2_w, c2_h, "sk_1")
             sk1_dx, sk1_dy = sc(VRAM_SKIP_C1[0]), sc(VRAM_SKIP_C1[1])
             _emit_compact_at_origin(
                 p4cd, "sk_1", 0, 0, c2_h, sk1_dx, sk1_dy, c1_w, c1_h,
@@ -3456,7 +3637,7 @@ def compile_chess_ai_filters(spec: dict, dpr: int) -> List[str]:
     vh_acc = ""
     for g, slot in enumerate(feat_slots):
         fx, fy = sc(slot[0]), sc(slot[1])
-        mat20 = vh["color_matrices"][g]
+        mat20 = _decode_p3_hi_mat20(vh["color_matrices"][g])
         p5v.append(f'<feOffset in="SourceGraphic" dx="{-fx}" dy="{-fy}" x="0" y="0" width="{c1_w}" height="{c1_h}" result="f_{g}"/>')
         p5v.append(f'<feColorMatrix in="f_{g}" x="0" y="0" width="{c1_w}" height="{c1_h}" type="matrix" values="{_fmt_list(mat20)}" result="vp_{g}"/>')
         if g == 0:
@@ -3627,8 +3808,16 @@ def compile_chess_ai_filters(spec: dict, dpr: int) -> List[str]:
         f'<feColorMatrix in="wb_m" x="{VIS_WINBAR_X}" y="{VIS_WINBAR_Y}" width="{VIS_WINBAR_W}" height="{VIS_WINBAR_H}" type="matrix" values="0.063 0 0 0 0.035 0 0.725 0 0 0.063 0 0 0.506 0 0.122 0 0 0 0 1" result="wb_fill"/>',
         f'<feFlood x="{VIS_FEAT_X - 1}" y="{VIS_FEAT1_Y - 1}" width="{VIS_FEAT_W + 2}" height="{VIS_FEAT_H + 2}" flood-color="#1e293b" flood-opacity="1" result="f1_bdr"/>',
         f'<feFlood x="{VIS_FEAT_X - 1}" y="{VIS_FEAT2_Y - 1}" width="{VIS_FEAT_W + 2}" height="{VIS_FEAT_H + 2}" flood-color="#1e293b" flood-opacity="1" result="f2_bdr"/>',
-        f'<feComponentTransfer in="SourceGraphic" x="{sk1_x}" y="{sk1_y}" width="{c1_w}" height="{c1_h}" result="sk_vis"><feFuncR type="linear" slope="4" intercept="-1.5"/><feFuncG type="linear" slope="4" intercept="-1.5"/><feFuncB type="linear" slope="4" intercept="-1.5"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
-        f'<feComponentTransfer in="SourceGraphic" x="{d37_x}" y="{d37_y}" width="{c1_w}" height="{c1_h}" result="d3_vis"><feFuncR type="linear" slope="3.2" intercept="0.03"/><feFuncG type="linear" slope="3.6" intercept="0.03"/><feFuncB type="linear" slope="3.6" intercept="0.05"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
+        f'<feComponentTransfer in="SourceGraphic" x="{sk1_x}" y="{sk1_y}" width="{c1_w}" height="{c1_h}" result="sk_vis">'
+        f'<feFuncR type="linear" slope="{_fmt_num(4.0 * P3_HI_INV_SCALE)}" intercept="{_fmt_num(-1.5 - 4.0 * P3_HI_DEC_OFFSET)}"/>'
+        f'<feFuncG type="linear" slope="{_fmt_num(4.0 * P3_HI_INV_SCALE)}" intercept="{_fmt_num(-1.5 - 4.0 * P3_HI_DEC_OFFSET)}"/>'
+        f'<feFuncB type="linear" slope="{_fmt_num(4.0 * P3_HI_INV_SCALE)}" intercept="{_fmt_num(-1.5 - 4.0 * P3_HI_DEC_OFFSET)}"/>'
+        f'<feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
+        f'<feComponentTransfer in="SourceGraphic" x="{d37_x}" y="{d37_y}" width="{c1_w}" height="{c1_h}" result="d3_vis">'
+        f'<feFuncR type="linear" slope="{_fmt_num(3.2 * P3_HI_INV_SCALE)}" intercept="{_fmt_num(0.03 - 3.2 * P3_HI_DEC_OFFSET)}"/>'
+        f'<feFuncG type="linear" slope="{_fmt_num(3.6 * P3_HI_INV_SCALE)}" intercept="{_fmt_num(0.03 - 3.6 * P3_HI_DEC_OFFSET)}"/>'
+        f'<feFuncB type="linear" slope="{_fmt_num(3.6 * P3_HI_INV_SCALE)}" intercept="{_fmt_num(0.05 - 3.6 * P3_HI_DEC_OFFSET)}"/>'
+        f'<feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
     ]
     _emit_periodic_zoom_rect(
         pva2, "sk_vis", sk1_x, sk1_y, c1_w, c1_h,

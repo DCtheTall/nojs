@@ -73,6 +73,8 @@ from svg_ai import (
     WEIGHTS_DEFAULT_PATH,
     best_dwconv3_triplet,
     compile_chess_ai_filters,
+    webkit_filter_variant,
+    WEBKIT_FILTER_SUFFIX,
     get_compute_stage_ids,
     load_weights,
     write_chess_ai_assets,
@@ -115,7 +117,12 @@ def generate_html(max_plies: int = DEFAULT_MAX_PLIES, weights_path: str = WEIGHT
 
     svg_defs: List[str] = []
     for dpr in (1, 2):
-        svg_defs.extend(compile_chess_ai_filters(w_spec, dpr))
+        stage_filters = compile_chess_ai_filters(w_spec, dpr)
+        svg_defs.extend(stage_filters)
+        # Safari/WebKit twins (truncating filter appliers -> +0.5 LSB rounding bias), see `webkit_filter_variant`
+        svg_defs.extend(
+            webkit_filter_variant(f) for f in stage_filters
+        )
 
     css: List[str] = []
 
@@ -153,72 +160,75 @@ def generate_html(max_plies: int = DEFAULT_MAX_PLIES, weights_path: str = WEIGHT
 *{{box-sizing:border-box;margin:0;padding:0}}
 body{{
   font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
-  background:#0b0f17;color:#e2e8f0;line-height:1.5;padding:1.45rem .9rem 3.8rem;min-height:100vh
+  background:#0b0f17;color:#e2e8f0;line-height:20px;padding:24px 0 60px;min-height:100vh
 }}
 .chess-app{{
-  max-width:1244px;margin:0 auto;display:flex;flex-direction:column;gap:1.15rem
+  width:min(1244px,calc(100vw - 28px));
+  margin-left:round(down,max(14px,calc((100vw - 1244px) / 2)),1px);
+  margin-right:0;display:flex;flex-direction:column;gap:18px
 }}
 .top-inp{{display:none}}
 
 header.hero{{
   border:1px solid #1e293b;background:linear-gradient(180deg,#111827,#0f172a);
-  border-radius:14px;padding:1.25rem 1.5rem;box-shadow:0 12px 32px rgba(0,0,0,.35)
+  border-radius:14px;padding:20px 24px;box-shadow:0 12px 32px rgba(0,0,0,.35)
 }}
-.back-row{{margin-bottom:.55rem}}
+.back-row{{margin-bottom:8px;height:26px;display:flex;align-items:center}}
 .back-link{{
-  display:inline-flex;align-items:center;gap:.35rem;font-size:.75rem;font-weight:600;
-  color:#94a3b8;text-decoration:none;padding:.2rem .6rem;border-radius:999px;
+  display:inline-flex;align-items:center;gap:6px;height:24px;font-size:12px;line-height:20px;font-weight:600;
+  color:#94a3b8;text-decoration:none;padding:0 10px;border-radius:999px;
   background:#0b1120;border:1px solid #1e293b;transition:color .14s,border-color .14s,background .14s
 }}
 .back-link:hover{{color:#38bdf8;border-color:#38bdf8;background:#0f1d32}}
-.badge-row{{display:flex;flex-wrap:wrap;gap:.42rem;margin-bottom:.55rem}}
+.badge-row{{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}}
 .badge{{
-  font-size:.69rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
-  padding:.18rem .52rem;border-radius:999px;background:#1e293b;color:#38bdf8;border:1px solid #334155
+  display:inline-flex;align-items:center;height:22px;font-size:11px;line-height:18px;font-weight:700;
+  letter-spacing:.06em;text-transform:uppercase;padding:0 8px;border-radius:999px;
+  background:#1e293b;color:#38bdf8;border:1px solid #334155
 }}
 .badge.green{{color:#4ade80;border-color:#14532d;background:#052e16}}
 .badge.purple{{color:#c084fc;border-color:#4c1d95;background:#1e1035}}
 .badge.amber{{color:#fbbf24;border-color:#78350f;background:#271705}}
-header.hero h1{{font-size:1.52rem;font-weight:700;color:#f8fafc;letter-spacing:-.02em}}
-header.hero p{{margin-top:.35rem;color:#94a3b8;font-size:.88rem}}
-header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-radius:4px;font-size:.84em}}
+header.hero h1{{font-size:24px;line-height:32px;font-weight:700;color:#f8fafc;letter-spacing:-.02em}}
+header.hero p{{margin-top:6px;color:#94a3b8;font-size:14px;line-height:22px}}
+header.hero code{{color:#e2e8f0;background:#1e293b;padding:0 5px;border-radius:4px;font-size:12px;line-height:18px;display:inline-block;vertical-align:baseline}}
 
-.top-bar-grid{{display:grid;grid-template-columns:minmax(0,1.05fr) minmax(0,1.45fr);gap:1rem}}
+.top-bar-grid{{display:grid;grid-template-columns:minmax(0,1.05fr) minmax(0,1.45fr);gap:16px}}
 @media (max-width:1040px){{.top-bar-grid{{grid-template-columns:1fr}}}}
 
 .panel{{
   border:1px solid #1e293b;background:#111827;border-radius:14px;
-  padding:1rem 1.2rem;box-shadow:0 8px 24px rgba(0,0,0,.25)
+  padding:16px 18px;box-shadow:0 8px 24px rgba(0,0,0,.25)
 }}
-.panel-head{{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.45rem;margin-bottom:.68rem}}
-.panel-title{{font-size:.77rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:#94a3b8}}
-.pill-row{{display:flex;flex-wrap:wrap;gap:.45rem;align-items:center}}
+.panel-head{{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;min-height:28px;margin-bottom:10px}}
+.panel-title{{font-size:12px;line-height:20px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:#94a3b8}}
+.pill-row{{display:flex;flex-wrap:wrap;gap:8px;align-items:center}}
 
-.mode-grid{{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.45rem}}
+.mode-grid{{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}}
 @media (max-width:620px){{.mode-grid{{grid-template-columns:1fr}}}}
 
-.preset-grid{{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:.45rem}}
+.preset-grid{{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px}}
 @media (max-width:760px){{.preset-grid{{grid-template-columns:repeat(2,minmax(0,1fr))}}}}
 
 .pr-lbl,.md-lbl{{
-  display:flex;flex-direction:column;gap:.16rem;padding:.5rem .62rem;border-radius:9px;
+  display:flex;flex-direction:column;gap:4px;padding:8px 10px;border-radius:9px;
   background:#090d16;border:1px solid #263349;cursor:pointer;user-select:none;transition:all .12s
 }}
 .pr-lbl:hover,.md-lbl:hover{{border-color:#475569;background:#0f172a}}
-.pr-top{{display:flex;align-items:center;gap:.38rem;font-size:.75rem;font-weight:700;color:#e2e8f0}}
+.pr-top{{display:flex;align-items:center;gap:6px;font-size:12px;line-height:16px;font-weight:700;color:#e2e8f0}}
 .ui-dot{{
   display:inline-block;width:11px;height:11px;flex:0 0 11px;border-radius:50%;
   border:2px solid #475569;background:#090d16;transition:all .12s
 }}
 .ui-chk{{
   display:inline-block;width:11px;height:11px;flex:0 0 11px;border-radius:3px;
-  border:1.5px solid #475569;background:#090d16;transition:all .12s
+  border:2px solid #475569;background:#090d16;transition:all .12s
 }}
-.pr-sub{{font-size:.67rem;color:#64748b;line-height:1.32}}
+.pr-sub{{font-size:11px;color:#64748b;line-height:14px}}
 
 .flip-pill{{
-  display:inline-flex;align-items:center;gap:.4rem;padding:.28rem .62rem;border-radius:8px;
-  background:#090d16;border:1px solid #334155;font-size:.74rem;font-weight:600;color:#cbd5e1;
+  display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:8px;
+  background:#090d16;border:1px solid #334155;font-size:12px;line-height:20px;font-weight:600;color:#cbd5e1;
   cursor:pointer;user-select:none;transition:border-color .12s,background .12s
 }}
 .flip-pill:hover{{border-color:#38bdf8;background:#0f172a}}
@@ -236,58 +246,63 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
 
 .arena{{
   display:grid;grid-template-columns:minmax(300px,496px) minmax(0,1fr);
-  gap:1.1rem;align-items:start
+  gap:18px;align-items:start
 }}
-@media (max-width:1160px){{.arena{{grid-template-columns:1fr;justify-items:center}}}}
+@media (max-width:1160px){{.arena{{grid-template-columns:1fr;justify-items:start}}}}
 
-.play-col{{width:100%;max-width:496px;display:flex;flex-direction:column;gap:.85rem}}
+.play-col{{width:100%;max-width:496px;display:flex;flex-direction:column;gap:14px}}
 
 .status-card{{
-  border-radius:14px;padding:.9rem 1.1rem;contain:layout paint;
+  border-radius:14px;padding:14px 18px;contain:layout paint;
   background:linear-gradient(180deg,#0f1c2e,#0b1320);
   border:1px solid #1e3a5f;box-shadow:0 8px 24px rgba(0,0,0,.3)
 }}
-.status-top{{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:.4rem}}
-.status-kicker{{font-size:.69rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:#7dd3fc}}
-.status-main{{font-size:1.12rem;font-weight:800;color:#f8fafc;letter-spacing:-.01em}}
-.status-main i{{font-style:normal}}
+.status-top{{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;height:24px;overflow:hidden}}
+.status-kicker{{height:18px;overflow:hidden;font-size:11px;line-height:18px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:#7dd3fc}}
+.status-main{{height:24px;overflow:hidden;font-size:18px;line-height:24px;font-weight:800;color:#f8fafc;letter-spacing:-.01em}}
+.status-main i{{display:inline-block;height:24px;line-height:24px;overflow:hidden;vertical-align:top;font-style:normal}}
 .status-main i::after{{content:counter(st,game-status)}}
 
 .ai-turn-Callout{{
-  margin-top:.55rem;padding:.48rem .72rem;border-radius:8px;
+  margin-top:9px;padding:8px 12px;border-radius:8px;
   background:linear-gradient(90deg,rgba(168,85,247,.18),rgba(16,185,129,.18));
-  border:1px solid rgba(168,85,247,.55);font-size:.77rem;font-weight:600;color:#f1f5f9;
-  display:none;align-items:center;gap:.45rem
+  border:1px solid rgba(168,85,247,.55);font-size:12px;line-height:18px;font-weight:600;color:#f1f5f9;
+  display:none;align-items:center;gap:7px;height:54px;overflow:hidden
 }}
-.sw-dot{{display:inline-block;width:10px;height:10px;border-radius:3px;vertical-align:-1px}}
+@media (max-width:440px){{.ai-turn-Callout{{height:72px}}}}
+.ai-turn-Callout>span{{display:block;line-height:18px}}
+.ai-turn-Callout strong{{line-height:18px}}
+.bolt-ic{{display:inline-block;height:18px;line-height:18px;overflow:hidden;vertical-align:top;font-family:"Apple Symbols","Segoe UI Symbol","Noto Sans Symbols 2",sans-serif;font-variant-emoji:text}}
+.sw-dot{{display:inline-block;width:10px;height:10px;border-radius:3px;vertical-align:top;margin-top:4px}}
 .sw-from{{background:#a855f7;box-shadow:0 0 6px #a855f7}}
 .sw-to{{background:#10b981;box-shadow:0 0 6px #10b981}}
 
 .stat-grid{{
-  margin-top:.65rem;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:.42rem
+  margin-top:10px;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px
 }}
 @media (max-width:520px){{.stat-grid{{grid-template-columns:repeat(2,minmax(0,1fr))}}}}
 .stat-box{{
-  background:#080c14;border:1px solid #1e293b;border-radius:8px;padding:.4rem .55rem
+  background:#080c14;border:1px solid #1e293b;border-radius:8px;padding:6px 9px
 }}
-.stat-lbl{{font-size:.62rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#64748b}}
+.stat-lbl{{height:14px;overflow:hidden;font-size:10px;line-height:14px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#64748b}}
 .stat-val{{
-  margin-top:.06rem;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
-  font-size:.84rem;font-weight:700;color:#e2e8f0
+  margin-top:2px;height:18px;overflow:hidden;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-size:13px;line-height:18px;font-weight:700;color:#e2e8f0
 }}
 .stat-val i{{font-style:normal}}
 .sv-turn i::after{{content:counter(tn,turn-lbl)}}
 .sv-ply i::after{{content:counter(pl)}}
 .sv-hmc i::after{{content:counter(hm) "/100"}}
+.sv-last i{{display:inline-block;height:18px;line-height:18px;overflow:hidden;vertical-align:top}}
 .sv-last i::after{{content:counter(lf,sq-coord) "→" counter(lt,sq-coord)}}
 
 .board-shell{{
-  position:relative;width:100%;max-width:496px;padding:11px;border-radius:16px;contain:layout paint;
+  position:relative;width:round(down,min(496px,100%),1px);padding:11px;border-radius:16px;contain:layout paint;
   background:linear-gradient(180deg,#162032,#0e1524);border:1px solid #28364d;
   box-shadow:0 16px 40px rgba(0,0,0,.45)
 }}
 .board-frame{{
-  position:relative;width:100%;aspect-ratio:1/1;border-radius:8px;overflow:hidden;
+  position:relative;width:100%;height:round(down,calc(min(496px,100vw - 28px) - 24px),1px);border-radius:8px;overflow:hidden;
   border:2px solid #334155;transition:transform .28s cubic-bezier(.22,1,.36,1)
 }}
 #flip-bd:checked~#mv .board-frame{{transform:rotate(180deg)}}
@@ -357,14 +372,14 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
 .term-banner span{{font-size:.74rem;color:#94a3b8}}
 
 .ctrl-card{{
-  border:1px solid #1e293b;background:#111827;border-radius:14px;padding:.85rem 1.05rem;
-  display:flex;flex-direction:column;gap:.68rem;contain:layout paint
+  border:1px solid #1e293b;background:#111827;border-radius:14px;padding:14px 17px;
+  display:flex;flex-direction:column;gap:11px;contain:layout paint
 }}
-.btn-row{{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:.5rem}}
-.btn-grp{{display:flex;flex-wrap:wrap;gap:.5rem}}
+.btn-row{{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px}}
+.btn-grp{{display:flex;flex-wrap:wrap;gap:8px}}
 .btn{{
-  display:inline-flex;align-items:center;justify-content:center;gap:.38rem;
-  padding:.48rem .85rem;border-radius:8px;font-size:.79rem;font-weight:700;
+  display:inline-flex;align-items:center;justify-content:center;gap:6px;overflow:hidden;
+  height:34px;padding:0 14px;border-radius:8px;font-size:13px;line-height:20px;font-weight:700;
   cursor:pointer;user-select:none;border:1px solid #334155;background:#162032;color:#f8fafc;
   transition:background .13s,border-color .13s,transform .1s
 }}
@@ -374,47 +389,51 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
 .btn.rst:hover{{border-color:#ef4444;background:#35151b;color:#fecaca}}
 .undo-btn{{display:none;border-color:#0369a1;background:#0c2438;color:#7dd3fc}}
 .undo-disabled{{
-  display:none;align-items:center;gap:.38rem;padding:.48rem .85rem;border-radius:8px;
-  font-size:.79rem;font-weight:600;border:1px solid #1e293b;background:#0b0f17;color:#475569
+  display:none;align-items:center;gap:6px;height:34px;padding:0 14px;border-radius:8px;
+  font-size:13px;line-height:20px;font-weight:600;border:1px solid #1e293b;background:#0b0f17;color:#475569
 }}
 #t0n:checked~.arena .undo-disabled{{display:inline-flex}}
-.sel-pill{{font-size:.73rem;color:#94a3b8;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}}
-.sel-pill i{{font-style:normal;color:#38bdf8;font-weight:700}}
+.sel-pill{{height:18px;line-height:18px;overflow:hidden;font-size:12px;color:#94a3b8;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}}
+.sel-pill i{{display:inline-block;height:18px;line-height:18px;overflow:hidden;vertical-align:top;font-style:normal;color:#38bdf8;font-weight:700}}
 .sel-pill i::after{{content:counter(slc,sq-coord)}}
 
 .promo-box{{
-  padding:.62rem .78rem;border-radius:9px;background:#090d16;border:1px solid #1e293b;
+  padding:10px 12px;border-radius:9px;background:#090d16;border:1px solid #1e293b;
   transition:border-color .15s,box-shadow .15s
 }}
-.promo-head{{display:flex;justify-content:space-between;align-items:center;gap:.4rem;margin-bottom:.42rem}}
-.promo-title{{font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#94a3b8}}
-.promo-cur{{font-size:.73rem;font-weight:700;color:#fbbf24}}
-.promo-cur i{{font-style:normal}}
+.promo-head{{display:flex;justify-content:space-between;align-items:center;gap:6px;height:18px;overflow:hidden;margin-bottom:7px}}
+.promo-title{{font-size:11px;line-height:18px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#94a3b8}}
+.promo-cur{{font-size:12px;line-height:18px;font-weight:700;color:#fbbf24;font-family:ui-sans-serif,-apple-system,sans-serif}}
+.promo-cur i{{font-style:normal;line-height:18px;font-variant-emoji:text}}
 .promo-cur i::after{{content:counter(pr,promo-lbl)}}
-.pr-bar{{display:none;grid-template-columns:repeat(4,1fr);gap:.38rem}}
+.pr-bar{{display:none;height:30px;grid-template-columns:repeat(4,1fr);gap:6px}}
 .pr-opt{{
-  display:flex;align-items:center;justify-content:center;gap:.28rem;padding:.34rem .25rem;
+  display:flex;align-items:center;justify-content:center;gap:5px;height:30px;padding:0 4px;overflow:hidden;
   border-radius:7px;background:#111827;border:1px solid #28364d;cursor:pointer;
-  color:#cbd5e1;font-size:.72rem;font-weight:600;user-select:none;transition:all .12s
+  color:#cbd5e1;font-size:12px;line-height:18px;font-weight:600;user-select:none;transition:all .12s
 }}
 .pr-opt:hover{{border-color:#fbbf24;color:#fef08a}}
-.pr-opt b{{font-size:1.08rem;line-height:1;font-variant-emoji:text}}
+.pr-opt b{{font-size:16px;line-height:18px;font-family:"Apple Symbols","Segoe UI Symbol","Noto Sans Symbols 2",sans-serif;font-variant-emoji:text}}
 
 /* Exact 1:1 Device-Pixel SVG 2-Ply + Q3 CNN Minimax Engine Stage (`666 x 636` user units; `444 x 424` on 3x DPR!) */
-.ai-col{{width:100%;max-width:{STAGE_VIEW_W + 24}px}}
+.ai-col{{
+  width:100%;max-width:{STAGE_VIEW_W + 26}px;
+  margin-left:round(down,max(0px,calc((100% - {STAGE_VIEW_W + 26}px) / 2)),1px)
+}}
 .ai-panel{{
   border:1px solid #1e3a5f;background:#0b111e;border-radius:14px;
-  padding:.85rem .72rem .9rem;box-shadow:0 12px 32px rgba(0,0,0,.38)
+  padding:14px 12px 15px;box-shadow:0 12px 32px rgba(0,0,0,.38)
 }}
 .ai-head{{
-  display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;
-  gap:.4rem;padding:0 .35rem .6rem
+  display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;
+  gap:6px;min-height:22px;padding:0 6px;margin-bottom:8px
 }}
-.ai-title{{font-size:.78rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:#c084fc}}
-.ai-sub{{font-size:.72rem;color:#64748b;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}}
+.ai-title{{font-size:12px;line-height:20px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:#c084fc}}
+.ai-sub{{height:18px;overflow:hidden;font-size:11px;line-height:18px;color:#64748b;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}}
 .ai-scroll{{overflow-x:auto}}
 .ai-stage-shell{{
-  position:relative;width:{STAGE_VIEW_W}px;height:{STAGE_H}px;margin:0 auto;contain:layout paint;
+  position:relative;width:{STAGE_VIEW_W + 2}px;height:{STAGE_H + 2}px;
+  margin-left:round(down,max(0px,calc((100% - {STAGE_VIEW_W + 2}px) / 2)),1px);margin-right:0;contain:layout paint;
   border-radius:11px;background:#060a13;border:1px solid #1e293b;overflow:hidden
 }}
 .ai-fstage{{position:absolute;inset:0;width:{STAGE_VIEW_W}px;height:{STAGE_H}px;display:block}}
@@ -449,8 +468,15 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
 }}
 /* Exact 3x DPR iPhone / Super-Retina Mobile Scaling (`444/666 = 2/3` * `3` DPR = `2.000000` device px/unit!) */
 @media (-webkit-min-device-pixel-ratio:2.5),(min-resolution:2.5dppx){{
-  .ai-col{{max-width:468px}}
-  .ai-stage-shell,.ai-fstage{{width:{STAGE_VIEW_W * 2 // 3}px;height:{STAGE_H * 2 // 3}px}}
+  .ai-col{{
+    max-width:470px;
+    margin-left:round(down,max(0px,calc((100% - 470px) / 2)),1px)
+  }}
+  .ai-stage-shell{{
+    width:{STAGE_VIEW_W * 2 // 3 + 2}px;height:{STAGE_H * 2 // 3 + 2}px;
+    margin-left:round(down,max(0px,calc((100% - {STAGE_VIEW_W * 2 // 3 + 2}px) / 2)),1px)
+  }}
+  .ai-fstage{{width:{STAGE_VIEW_W * 2 // 3}px;height:{STAGE_H * 2 // 3}px}}
   .ai-hud{{inset:auto;left:0;top:0;width:{STAGE_VIEW_W}px;height:{STAGE_H}px;transform:scale(calc(2/3));transform-origin:0 0}}
 }}
 
@@ -527,6 +553,14 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
         css.append(f".ai-{sid}{{filter:url(#ai-{sid}-1x)}}")
         hidpi_sels.append(f".ai-{sid}{{filter:url(#ai-{sid}-2x)}}")
     css.append(f"@media (-webkit-min-device-pixel-ratio:1.5),(min-resolution:1.5dppx){{{''.join(hidpi_sels)}}}")
+    # Safari/WebKit only (`font:-apple-system-body` is a WebKit-only system font keyword; Chrome/Firefox
+    # reject it): bind the `-wk` rounding-compensated filter twins instead.
+    wk_1x = "".join(f".ai-{sid}{{filter:url(#ai-{sid}-1x{WEBKIT_FILTER_SUFFIX})}}" for sid in stage_ids)
+    wk_2x = "".join(f".ai-{sid}{{filter:url(#ai-{sid}-2x{WEBKIT_FILTER_SUFFIX})}}" for sid in stage_ids)
+    css.append(
+        f"@supports (font:-apple-system-body){{{wk_1x}"
+        f"@media (-webkit-min-device-pixel-ratio:1.5),(min-resolution:1.5dppx){{{wk_2x}}}}}"
+    )
 
     # -----------------------------------------------------------------------
     # C. Initial Position, Modes, Presets, & Scoped O(1) Ply Input Rules
@@ -694,7 +728,7 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
     css.append(
         ".ai-shield{opacity:calc(1 - var(--ai_show));transform:scale(calc(1 - var(--ai_show)))}"
         ".ai-turn-Callout{display:flex;opacity:var(--is_ai_turn);max-height:calc(80px*var(--is_ai_turn));"
-        "padding:calc(.48rem*var(--is_ai_turn)) .72rem;margin-top:calc(.55rem*var(--is_ai_turn));"
+        "padding:calc(8px*var(--is_ai_turn)) 12px;margin-top:calc(9px*var(--is_ai_turn));"
         "border-width:calc(1px*var(--is_ai_turn));overflow:hidden}"
     )
     css.append(
@@ -930,7 +964,7 @@ header.hero code{{color:#e2e8f0;background:#1e293b;padding:.08rem .3rem;border-r
         '<div class=status-main id=chess-status><i></i></div>'
         '</div>'
         '<div class=ai-turn-Callout>'
-        '<span>&#x26A1; <strong>SVG AI Turn:</strong> Execute the AI move shown on the 8&times;8 map &mdash; click <i class="sw-dot sw-from"></i> <strong>Violet (FROM)</strong> then <i class="sw-dot sw-to"></i> <strong>Emerald (TO)</strong>!</span>'
+        '<span><b class=bolt-ic>&#x26A1;</b> <strong>SVG AI Turn:</strong> Execute the AI move shown on the 8&times;8 map &mdash; click <i class="sw-dot sw-from"></i> <strong>Violet (FROM)</strong> then <i class="sw-dot sw-to"></i> <strong>Emerald (TO)</strong>!</span>'
         '</div>'
         '<div class=stat-grid>'
         '<div class=stat-box><div class=stat-lbl>Turn</div><div class="stat-val sv-turn" id=chess-turn><i></i></div></div>'
