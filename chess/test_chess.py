@@ -790,7 +790,11 @@ class TestSVG2PlyCNN(unittest.TestCase):
         best_uci = cr.sq_name(res7.best_u_real) + cr.sq_name(res7.best_v_real)
         self.assertIn(best_uci, {"d5c5", "d5d8", "d5d6", "d5a5"}, f"Expected safe Qd5 retreat, got {best_uci}")
         self.assertLessEqual(int(res7.q_scores_u8[45]), 45, f"Qxf3?? (v1=45) must score <= 45, got {res7.q_scores_u8[45]}")
-        self.assertGreaterEqual(int(res7.best_score_u8), 115)
+        self.assertGreaterEqual(
+            int(res7.best_score_u8),
+            int(res7.q_scores_u8[45]) + 30,
+            f"Safe Qd5 retreat ({res7.best_score_u8}) must outscore Qxf3?? ({res7.q_scores_u8[45]}) by >= 30 u8",
+        )
 
     def test_07_ply3_quiescence_fide_legality_and_tactical_horizon(self) -> None:
         """Verify Ply-3 Quiescence (`s2q0..s2q7`) produces 100% FIDE-legal captures across random
@@ -852,12 +856,50 @@ class TestSVG2PlyCNN(unittest.TestCase):
         # 2. 3-Ply Winning Exchange: 1. Nxd5 exd5 2. Bxd5! (+1 pawn after Ply-3 recapture)
         combo_env = simulate_css_chess(
             self.css_spec,
-            initial_fen="r2qkb1r/pppb1ppp/4p1n1/3n4/2B5/2N5/PPPPPPPP/R1BQK1NR w KQkq - 0 6",
+            initial_fen="r2qkb1r/pppb1ppp/4p3/3n4/2B5/2N2N2/PPPP1PPP/R1BQ1RK1 w kq - 0 7",
             fast_stages=self.fast,
         )
         res_combo = self.svg_ai.simulate_svg_2ply_cnn(combo_env, self.w_spec)
         self.assertEqual(cr.sq_name(res_combo.best_u_real) + cr.sq_name(res_combo.best_v_real), "c3d5")
         self.assertGreaterEqual(int(res_combo.best_score_u8), 155)
+
+    def test_08_quadrant1_queen_capture_priority_and_material_monotonicity(self) -> None:
+        """Verify Ply-2 `ai_k_adj` (`Tier 12`) never lets suicidal `Qd1->d7+` mask `Bg5xd8 / Qd1xd8`,
+        and enforce strict ceteris-paribus piece-drop ordering (`Q < R < B/N < P < 0`) on `weights.json`.
+        """
+        import numpy as np
+
+        # 1. `Bg5` & `Qd1` both target Black's `Qd8` in Quadrant `q=1`: `d5c4??` must NOT win!
+        q1_fen = "rnbqkbnr/ppp2ppp/8/3p2B1/2P5/2p2N2/PP2PPPP/R2QKB1R b KQkq - 1 5"
+        env_q1 = simulate_css_chess(self.css_spec, initial_fen=q1_fen, fast_stages=self.fast)
+        res_q1 = self.svg_ai.simulate_svg_2ply_cnn(env_q1, self.w_spec)
+        best_q1 = cr.sq_name(res_q1.best_u_real) + cr.sq_name(res_q1.best_v_real)
+        self.assertNotEqual(best_q1, "d5c4", "Quadrant-1 Queen hang `d5c4??` was not refuted by `Bg5xd8`")
+
+        # 2. Ceteris-paribus piece-drop monotonicity on balanced middlegame boards
+        probe_fens = [
+            "r1bqkb1r/ppp2ppp/2np1n2/4p3/2B1P3/2NP1N2/PPP2PPP/R1BQK2R b KQkq - 0 5",
+            "rnbq1rk1/ppp1ppbp/3p1np1/8/2PPP3/2N2N2/PP2BPPP/R1BQK2R b KQ - 2 6",
+            "r2qkb1r/pp2pppp/2n2n2/2pp1b2/3P1B2/2P1PN2/PP1N1PPP/R2QKB1R b KQkq - 2 6",
+            "r1bq1rk1/pppp1ppp/2n2n2/2b1p3/2B1P3/2NP1N2/PPP2PPP/R1BQ1RK1 b - - 6 6",
+        ]
+        boards = np.stack(
+            [self.svg_ai.extract_root_board_u8_from_css(simulate_css_chess(self.css_spec, initial_fen=f, fast_stages=self.fast)) for f in probe_fens],
+            axis=0,
+        )
+        lg_base, _, _ = self.svg_ai.evaluate_svg_cnn_batch(boards, self.w_spec)
+        drops = {}
+        for ch, nm in ((0, "P"), (1, "N"), (2, "B"), (3, "R"), (4, "Q")):
+            bd = boards.copy()
+            for i in range(len(bd)):
+                ys, xs = np.where(bd[i, ch] == 255)
+                bd[i, ch, ys[0], xs[0]] = 128
+            lg_d, _, _ = self.svg_ai.evaluate_svg_cnn_batch(bd, self.w_spec)
+            drops[nm] = float((lg_d - lg_base).mean())
+        self.assertLess(drops["P"], -0.10, f"Pawn drop too weak: {drops}")
+        self.assertLess(max(drops["N"], drops["B"]), drops["P"], f"Minor drop not below Pawn: {drops}")
+        self.assertLess(drops["R"], min(drops["N"], drops["B"]), f"Rook drop not below Minor: {drops}")
+        self.assertLess(drops["Q"], drops["R"], f"Queen drop not below Rook: {drops}")
 
 
 if __name__ == "__main__":

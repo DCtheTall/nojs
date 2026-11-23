@@ -3,7 +3,7 @@
 Multi-Stage Linear-VRAM HTML5 SVG `<filter>` 2-Ply CNN Minimax Engine (`chess/svg_ai.py`).
 
 Wires the Stockfish-distilled 3-layer 8-bit quantized Convolutional Value Network (`chess/weights.json`,
-2,623 parameters, 5x5 Knight-vision Layer 1, Z0 = 128/255, Pearson r = 0.9186 vs Stockfish, 96.1% sibling rank acc)
+2,623 parameters, 5x5 Knight-vision Layer 1, Z0 = 128/255, Pearson r = 0.902 vs Stockfish, 96.4% sibling rank acc)
 into a pure HTML5 SVG `<filter>` 2-ply Minimax pipeline with:
   - Exact Ply-1 legal moves (`64` destination columns from CSS `.e12`, including O-O, O-O-O, EP, promos)
   - Exact Ply-2 FIDE King-safety, check-evasion, double-check & pin-axis filtering across all 64 post-move
@@ -733,7 +733,7 @@ def _select_ply2_quadrant_replies(s1_u8: np.ndarray) -> Tuple[List[Tuple[int, in
         mvv = int(mvv_grid[ty, tx])
         base_tier = compute_ply2_base_tier(pt_src, mvv, 1 if ty == 0 else 0)
         if pt_src == 5 and ai_k_adj[ty, tx]:
-            base_tier = max(base_tier, 30)
+            base_tier = max(base_tier, 12)
         sub_xy = 2 * (ty % 2) + (tx % 2)
         sc = 128 + 4 * base_tier + sub_xy
         # Matches `<feBlend mode="lighten">` on `128 + u2`: higher `u2` wins same-piece-type tie!
@@ -2192,7 +2192,7 @@ def compile_chess_ai_filters(spec: dict, dpr: int) -> List[str]:
     out_filters.append(_wrap_filter(f"ai-s1h-{dpr}x", p1h))
 
     # =========================================================================
-    # Stage `s1i`: Merge `B/R` (`slm.R`) & `Q` (`slm.G` w/ `ai_k_adj` Tier 30) vs `PNK` + `2x2` Argmax
+    # Stage `s1i`: Merge `B/R` (`slm.R`) & `Q` (`slm.G` w/ `ai_k_adj` Tier 12) vs `PNK` + `2x2` Argmax
     # =========================================================================
     tbl_sl_u2_128 = " ".join(_ct_u8(128 + ((c - 64) % 64)) if c >= 64 else "0" for c in range(256))
     tbl_sl_pt128 = " ".join(
@@ -2230,9 +2230,9 @@ def compile_chess_ai_filters(spec: dict, dpr: int) -> List[str]:
         f'<feComponentTransfer in="sl_r3" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" result="br_msk"><feFuncR type="table" tableValues="{tbl_ge128}"/><feFuncG type="table" tableValues="{tbl_ge128}"/><feFuncB type="table" tableValues="{tbl_ge128}"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',
         f'<feComposite in="tq_r" in2="br_bns" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="br_raw"/>',
         f'<feComposite in="br_raw" in2="br_msk" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" operator="arithmetic" k1="1" k2="0" k3="0" k4="0" result="cand_br"/>',
-        # `Q` candidate from `slm.G` (`128+u2=Q`, boosted to Tier `30` = `248/255` on `k_adj`!):
-        f'<feColorMatrix in="k_adj" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" type="matrix" values="0 0 {_fmt_num(248/255)} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="kq_248"/>',
-        f'<feBlend in="tq_r" in2="kq_248" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" mode="lighten" result="tq_adj"/>',
+        # `Q` candidate from `slm.G` (`128+u2=Q`, boosted to Tier `12` = `176/255` on `k_adj` so contact mates beat `Bxf7+` without masking `N/B/R/Q` captures!):
+        f'<feColorMatrix in="k_adj" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" type="matrix" values="0 0 {_fmt_num(176/255)} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1" result="kq_176"/>',
+        f'<feBlend in="tq_r" in2="kq_176" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" mode="lighten" result="tq_adj"/>',
         f'<feColorMatrix in="slm" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" type="matrix" values="0 0 0 0 0 0 1 0 0 0 0 0 0 0 {_fmt_num(133/255)} 0 0 0 0 1" result="q_gb"/>',
         f'<feColorMatrix in="slm" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" type="matrix" values="0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 0 0 0 1" result="sl_g3"/>',
         f'<feComponentTransfer in="sl_g3" x="{s1_kx}" y="{s1_ky}" width="{s1_w}" height="{s1_h}" result="q_msk"><feFuncR type="table" tableValues="{tbl_ge128}"/><feFuncG type="table" tableValues="{tbl_ge128}"/><feFuncB type="table" tableValues="{tbl_ge128}"/><feFuncA type="discrete" tableValues="1"/></feComponentTransfer>',

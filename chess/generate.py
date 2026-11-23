@@ -8,7 +8,7 @@ Generates a standalone zero-JavaScript HTML5 application combining:
      castling, en passant (including horizontal discovered-check pins), underpromotions,
      checkmate, stalemate, insufficient material, 50-move rule, LIFO Undo, and `.e12` Ply-1 bus.
   2. Pure HTML5 SVG `<filter>` 2-Ply CNN Minimax AI Opponent (`chess/svg_ai.py` + `chess/weights.json`):
-     Stockfish-distilled 3-layer 8-bit quantized CNN Value Network (`2,623` params, `r = 0.9186`)
+     Stockfish-distilled 3-layer 8-bit quantized CNN Value Network (`2,623` params, `r = 0.902`, `96.4%` rank acc)
      evaluating `64 x 16 = 1,024` depth-2 FIDE-legal leaf boards in parallel (with exact depth-2
      checkmate detection) via `<feConvolveMatrix>`, `<feColorMatrix>`, `<feDisplacementMap>`, and
      `<feMorphology>` (`erode` + `dilate`).
